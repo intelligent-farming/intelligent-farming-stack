@@ -99,18 +99,40 @@ if (-not (Test-Path .env)) {
 }
 
 # ── build + up ───────────────────────────────────────────────────────────────
+# ── Leftenant image ──────────────────────────────────────────────────────────
+# Built from the public repo with `docker build <giturl>` (the buildx CLI clones
+# the repo server-side), NOT compose's build.context — compose mis-resolves a
+# remote git context as a local path on Windows (docker/compose#13815), which is
+# the "filename, directory name, or volume label syntax is incorrect" error.
+$leftenantImage = Get-EnvVal 'LEFTENANT_IMAGE' 'intelligent-farming-stack/leftenant:local'
+$leftenantGit   = Get-EnvVal 'LEFTENANT_GIT'   'https://github.com/intelligent-farming/leftenant.git#main'
+function Build-Leftenant {
+    param([string]$Flag = '')
+    Write-Log "Building Leftenant image ($leftenantImage) from $leftenantGit ..."
+    if ($Flag) { docker build $Flag -t $leftenantImage $leftenantGit }
+    else       { docker build       -t $leftenantImage $leftenantGit }
+    if ($LASTEXITCODE -ne 0) { Die "Leftenant image build failed." }
+}
+
 if ($Rebuild) {
-    Write-Log "Forcing a clean rebuild of locally-built images..."
+    Write-Log "Forcing a clean rebuild of all images..."
+    Build-Leftenant '--no-cache'
     docker compose build --no-cache
     if ($LASTEXITCODE -ne 0) { Die "image rebuild failed." }
 }
 elseif ($Update) {
     Write-Log "Updating: pulling newer published images..."
-    docker compose pull
+    # --ignore-pull-failures: the Leftenant image is local-only (built below), so
+    # compose can't pull it — that expected failure must not abort the update.
+    docker compose pull --ignore-pull-failures
     if ($LASTEXITCODE -ne 0) { Die "image pull failed." }
-    Write-Log "Rebuilding in-repo images and re-fetching Leftenant's latest main..."
+    Write-Log "Rebuilding images and re-fetching Leftenant's latest main..."
+    Build-Leftenant '--pull'
     docker compose build --pull
     if ($LASTEXITCODE -ne 0) { Die "image rebuild failed." }
+}
+else {
+    Build-Leftenant
 }
 
 Write-Log "Starting the stack (this also runs the provisioner)..."

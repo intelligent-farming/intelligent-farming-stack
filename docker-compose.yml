@@ -16,8 +16,9 @@
 # read-only GraphQL/GraphiQL endpoint over them. No separate collector; nothing here
 # depends on the intelligent-farming-hub repo.
 #
-# Leftenant builds straight from its public repo (github.com/intelligent-farming/leftenant,
-# main) — no local clone needed. Everything else uses published images or builds in-repo.
+# Leftenant runs an image built from its public repo (github.com/intelligent-farming/leftenant,
+# main) by the setup scripts via `docker build <giturl>` — no local clone, and no compose git-URL
+# build context (that one breaks on Windows). Everything else uses published images or builds in-repo.
 name: intelligent-farming-stack
 
 services:
@@ -141,10 +142,14 @@ services:
 
   # ── Leftenant (pre-configured provisioning UI) ──────────────────────────────
   leftenant:
-    # Builds the latest main from the public repo (not a local clone), so a fresh
-    # `--build` always tracks upstream. Docker clones the git context each build;
-    # force a re-fetch with `docker compose build --no-cache leftenant`.
-    build: https://github.com/intelligent-farming/leftenant.git#main
+    # Runs an image built from the public repo's latest main. We intentionally do
+    # NOT use compose's `build:` git-URL support: compose mis-resolves a remote git
+    # context as a local path on Windows (docker/compose#13815 — "filename, directory
+    # name, or volume label syntax is incorrect"). Instead the setup scripts and the
+    # one-line installer build this tag with `docker build <giturl>` (the buildx CLI
+    # clones the repo server-side, which works on every platform). Build it with:
+    #   docker build -t intelligent-farming-stack/leftenant:local https://github.com/intelligent-farming/leftenant.git#main
+    image: ${LEFTENANT_IMAGE:-intelligent-farming-stack/leftenant:local}
     restart: unless-stopped
     ports:
       - "${LEFTENANT_HOST_PORT:-4173}:80"

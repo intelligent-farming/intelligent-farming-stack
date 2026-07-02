@@ -7,9 +7,11 @@ A one-command docker-compose bench that boots ChirpStack (US915), Leftenant, and
 device-event store together, auto-provisions an "Intelligent Farming" tenant + API key, and
 wires everything so a fresh device runs `docker compose up` and is ready. Device events are
 stored by ChirpStack's own PostgreSQL integration into `events-postgres` (it auto-creates the
-`event_*` tables); `events-api` (PostGraphile) serves read-only GraphQL over them. Leftenant builds
-from its public repo (`github.com/intelligent-farming/leftenant`, main) — no sibling clone needed,
-and this stack does not depend on `intelligent-farming-hub`.
+`event_*` tables); `events-api` (PostGraphile) serves read-only GraphQL over them. Leftenant runs an
+image the setup scripts build from its public repo (`github.com/intelligent-farming/leftenant`, main)
+with `docker build <giturl>` — not compose's `build:` git context, which breaks on Windows
+(docker/compose#13815). No sibling clone needed, and this stack does not depend on
+`intelligent-farming-hub`.
 
 ## Project & licensing (non-negotiable)
 - Licensed GNU AGPL-3.0-or-later. The full text is in LICENSE at the repo root — never modify, move, or remove it.

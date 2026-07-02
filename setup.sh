@@ -77,16 +77,33 @@ else
   log "Using existing .env."
 fi
 
+# ── Leftenant image ────────────────────────────────────────────────────────
+# Built from the public repo with `docker build <giturl>` (the buildx CLI clones
+# the repo server-side), NOT compose's build.context — compose mis-resolves a
+# remote git context as a local path on Windows (docker/compose#13815).
+LEFTENANT_IMAGE=$(env_val LEFTENANT_IMAGE "intelligent-farming-stack/leftenant:local")
+LEFTENANT_GIT=$(env_val LEFTENANT_GIT "https://github.com/intelligent-farming/leftenant.git#main")
+build_leftenant() {  # $1 = extra docker build flags (e.g. --pull / --no-cache)
+  log "Building Leftenant image ($LEFTENANT_IMAGE) from $LEFTENANT_GIT …"
+  docker build ${1:-} -t "$LEFTENANT_IMAGE" "$LEFTENANT_GIT" || die "Leftenant image build failed."
+}
+
 # ── build + up ───────────────────────────────────────────────────────────────
 BUILD_FLAG="--build"
 if [ "${1:-}" = "--rebuild" ]; then
-  log "Forcing a clean rebuild of locally-built images…"
+  log "Forcing a clean rebuild of all images…"
+  build_leftenant --no-cache
   $COMPOSE build --no-cache
 elif [ "${1:-}" = "--update" ]; then
   log "Updating: pulling newer published images…"
-  $COMPOSE pull
-  log "Rebuilding in-repo images and re-fetching Leftenant's latest main…"
+  # --ignore-pull-failures: the Leftenant image is local-only (built below), so
+  # compose can't pull it — that expected failure must not abort the update.
+  $COMPOSE pull --ignore-pull-failures
+  log "Rebuilding images and re-fetching Leftenant's latest main…"
+  build_leftenant --pull
   $COMPOSE build --pull
+else
+  build_leftenant
 fi
 
 log "Starting the stack (this also runs the provisioner)…"
