@@ -9,9 +9,14 @@
 #
 # Usage:
 #   ./setup.sh            # build (if needed) + start + provision
+#   ./setup.sh --update   # refresh images + rebuild (latest Leftenant main), keep data
 #   ./setup.sh --rebuild  # force a clean image rebuild
 #   ./setup.sh --down     # stop and remove the stack (keeps data volumes)
 #   ./setup.sh --reset    # stop and remove the stack AND its data volumes
+#
+# --update refreshes the running stack from the files already on disk. To also pull
+# the latest repo itself, re-run the one-line installer from the README (it re-downloads
+# then updates); data volumes survive because the compose project name is pinned.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -53,10 +58,8 @@ command -v docker >/dev/null 2>&1 || die "docker is not installed or not on PATH
 docker compose version >/dev/null 2>&1 || die "docker compose v2 is required (got none)."
 docker info >/dev/null 2>&1 || die "the Docker daemon is not running — start Docker Desktop and retry."
 
-# Leftenant and the Hub build from their sibling repos in this workspace.
-for repo in ../leftenant ../intelligent-farming-hub; do
-  [ -d "$repo" ] || die "missing sibling repo '$repo' — clone it alongside this one (see README)."
-done
+# No sibling repos needed: Leftenant builds from its public git repo, everything
+# else uses published images or builds in-repo (events-api, provisioning).
 
 # Heads-up if the default ports are already taken (e.g. a separate
 # chirpstack-docker stack). Only one stack can hold these at a time.
@@ -79,6 +82,11 @@ BUILD_FLAG="--build"
 if [ "${1:-}" = "--rebuild" ]; then
   log "Forcing a clean rebuild of locally-built images…"
   $COMPOSE build --no-cache
+elif [ "${1:-}" = "--update" ]; then
+  log "Updating: pulling newer published images…"
+  $COMPOSE pull
+  log "Rebuilding in-repo images and re-fetching Leftenant's latest main…"
+  $COMPOSE build --pull
 fi
 
 log "Starting the stack (this also runs the provisioner)…"

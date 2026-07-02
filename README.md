@@ -11,26 +11,134 @@ auto-creating its `event_*` tables on first boot. **`events-api`** (PostGraphile
 GraphQL/GraphiQL endpoint over them. There is no separate collector, and nothing here depends on the
 `intelligent-farming-hub` repo.
 
+**Get started:** one command [installs & runs](#install--run) the whole stack (no Git, no config),
+one command [updates](#updating) it, and the [command reference](#command-reference) covers day-to-day
+operations. Jump to [Prerequisites](#prerequisites) first.
+
 ## Prerequisites
 
 - Docker + Docker Compose v2 (with network access on first build — Leftenant is built from its
   public repo, and the other images are pulled from Docker Hub). No sibling repos need to be cloned.
 
-## Usage
+## Install & run
 
-```sh
-cp .env.example .env        # defaults work for a localhost bench
-docker compose up -d --build
+The only prerequisite is a running Docker daemon (see [Prerequisites](#prerequisites)). The
+one-command installers below download the repo, build, and start the whole stack — no Git, and no
+`.env`, needed. Every setting has a built-in default; copy `.env.example` to `.env` only if you want
+to change one.
+
+### Windows — one command
+
+Open **PowerShell** and paste this single line. It downloads the repo to
+`%USERPROFILE%\ifs\intelligent-farming-stack-main` (no Git needed), then builds and starts the stack
+from there:
+
+```powershell
+$ErrorActionPreference='Stop'; iwr 'https://github.com/intelligent-farming/intelligent-farming-stack/archive/refs/heads/main.zip' -OutFile "$env:TEMP\ifs.zip"; Expand-Archive "$env:TEMP\ifs.zip" "$env:USERPROFILE\ifs" -Force; Set-Location "$env:USERPROFILE\ifs\intelligent-farming-stack-main"; docker compose up -d --build
 ```
 
-Then:
+The stack self-provisions on first boot. For a friendlier run — prerequisite checks, provisioner
+verification, and a printed list of URLs — run the bundled helper from that folder instead of the
+last `docker compose` command:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup.ps1        # -Update to update, -Down to stop, -Reset to wipe data
+```
+
+### macOS / Linux — one command
+
+Paste this single line into a terminal. It downloads and extracts the repo into
+`intelligent-farming-stack-main/` under your current directory (no Git needed — just `curl`), then
+builds and starts the stack from there:
+
+```sh
+curl -fsSL https://github.com/intelligent-farming/intelligent-farming-stack/archive/refs/heads/main.tar.gz | tar -xz && cd intelligent-farming-stack-main && docker compose up -d --build
+```
+
+For prerequisite checks, provisioner verification, and a printed list of URLs, run the bundled helper
+from that folder instead of the last `docker compose` command:
+
+```sh
+./setup.sh            # --update to update, --down to stop, --reset to wipe data
+```
+
+Prefer Git? `git clone https://github.com/intelligent-farming/intelligent-farming-stack.git && cd
+intelligent-farming-stack && docker compose up -d --build` does the same.
+
+### Then open
 
 - Leftenant (pre-configured): http://localhost:4173
 - ChirpStack admin UI: http://localhost:8080 (default login `admin` / `admin`)
 - ChirpStack REST API: http://localhost:8090
 - Device-event GraphQL (PostGraphile): http://localhost:5050/graphql — GraphiQL IDE at http://localhost:5050/graphiql
 
-The provisioner runs once and exits; check it with `docker compose logs provisioner`.
+The first build clones Leftenant from its public repo and pulls the ChirpStack/Postgres/etc. images,
+so it needs network access and takes a few minutes. The provisioner runs once and exits; check it
+with `docker compose logs provisioner`.
+
+## Updating
+
+Pull the latest of everything — the repo files, the published images, and Leftenant's latest `main` —
+then recreate the containers. **Your data is preserved**: the compose project name is pinned, so the
+named volumes (`eventsdata`, `chirpstack-pgdata`, …) are reused across updates regardless of where the
+repo lives. A `.env` you created is also left untouched (it isn't part of the download).
+
+### Windows — one command
+
+```powershell
+$ErrorActionPreference='Stop'; iwr 'https://github.com/intelligent-farming/intelligent-farming-stack/archive/refs/heads/main.zip' -OutFile "$env:TEMP\ifs.zip"; Expand-Archive "$env:TEMP\ifs.zip" "$env:USERPROFILE\ifs" -Force; Set-Location "$env:USERPROFILE\ifs\intelligent-farming-stack-main"; docker compose pull; docker compose build --pull; docker compose up -d
+```
+
+### macOS / Linux — one command
+
+```sh
+curl -fsSL https://github.com/intelligent-farming/intelligent-farming-stack/archive/refs/heads/main.tar.gz | tar -xz && cd intelligent-farming-stack-main && docker compose pull && docker compose build --pull && docker compose up -d
+```
+
+Already have the repo on disk and just want to refresh images + rebuild (latest Leftenant `main`)
+without re-downloading? Run the helper from the repo folder:
+
+```sh
+./setup.sh --update                                    # macOS / Linux
+powershell -ExecutionPolicy Bypass -File .\setup.ps1 -Update   # Windows
+```
+
+> `docker compose build --pull` re-resolves Leftenant's `git#main` context, so an update picks up new
+> Leftenant commits. If you ever suspect a stale build, force it with `docker compose build --no-cache
+> leftenant` (or `./setup.sh --rebuild`).
+
+## Stopping and removing
+
+Run these from the repo folder (`%USERPROFILE%\ifs\intelligent-farming-stack-main` on Windows, or
+wherever you extracted/cloned it):
+
+```sh
+docker compose stop        # pause containers, keep everything
+docker compose down        # stop + remove containers/network, KEEP data volumes
+docker compose down -v     # stop + remove containers AND delete all data (full reset)
+```
+
+The helper scripts wrap the last two: `./setup.sh --down` / `-Down` (keep data) and
+`./setup.sh --reset` / `-Reset` (wipe data). To uninstall completely, run `docker compose down -v`
+and then delete the repo folder.
+
+## Command reference
+
+Once installed, all day-to-day commands run from the repo folder. The `docker compose` form and the
+helper-script form are equivalent — use whichever you prefer.
+
+| Task | `docker compose` | Helper script |
+|------|------------------|---------------|
+| Start (build if needed) | `docker compose up -d --build` | `./setup.sh` · `.\setup.ps1` |
+| Update (refresh images + latest Leftenant, keep data) | `docker compose pull && docker compose build --pull && docker compose up -d` | `./setup.sh --update` · `.\setup.ps1 -Update` |
+| Clean rebuild (no cache) | `docker compose build --no-cache && docker compose up -d` | `./setup.sh --rebuild` · `.\setup.ps1 -Rebuild` |
+| Stop, keep data | `docker compose down` | `./setup.sh --down` · `.\setup.ps1 -Down` |
+| Stop, wipe data | `docker compose down -v` | `./setup.sh --reset` · `.\setup.ps1 -Reset` |
+| Follow logs | `docker compose logs -f` | — |
+
+For the **first install** and for a **full update that also refreshes the repo files**, use the
+one-command installers under [Install & run](#install--run) and [Updating](#updating) — they download
+the repo first, then run the equivalent of the commands above.
 
 ## What gets provisioned
 

@@ -8,15 +8,21 @@
 #
 # Usage (PowerShell):
 #   .\setup.ps1            # build (if needed) + start + provision
+#   .\setup.ps1 -Update    # refresh images + rebuild (latest Leftenant main), keep data
 #   .\setup.ps1 -Rebuild   # force a clean image rebuild
 #   .\setup.ps1 -Down      # stop and remove the stack (keeps data volumes)
 #   .\setup.ps1 -Reset     # stop and remove the stack AND its data volumes
+#
+# -Update refreshes the running stack from the files already on disk. To also pull
+# the latest repo itself, re-run the one-line installer from the README (it re-downloads
+# then updates); data volumes survive because the compose project name is pinned.
 #
 # If scripts are blocked, run once:
 #   powershell -ExecutionPolicy Bypass -File .\setup.ps1
 
 [CmdletBinding()]
 param(
+    [switch]$Update,
     [switch]$Rebuild,
     [switch]$Down,
     [switch]$Reset
@@ -73,12 +79,8 @@ if ($LASTEXITCODE -ne 0) { Die "docker compose v2 is required (got none)." }
 docker info *> $null
 if ($LASTEXITCODE -ne 0) { Die "the Docker daemon is not running - start Docker Desktop and retry." }
 
-# Leftenant and the Hub build from their sibling repos in this workspace.
-foreach ($repo in @('../leftenant', '../intelligent-farming-hub')) {
-    if (-not (Test-Path $repo)) {
-        Die "missing sibling repo '$repo' - clone it alongside this one (see README)."
-    }
-}
+# No sibling repos needed: Leftenant builds from its public git repo, everything
+# else uses published images or builds in-repo (events-api, provisioning).
 
 # Heads-up if the default ports are already taken (e.g. a separate
 # chirpstack-docker stack). Only one stack can hold these at a time.
@@ -100,6 +102,14 @@ if (-not (Test-Path .env)) {
 if ($Rebuild) {
     Write-Log "Forcing a clean rebuild of locally-built images..."
     docker compose build --no-cache
+    if ($LASTEXITCODE -ne 0) { Die "image rebuild failed." }
+}
+elseif ($Update) {
+    Write-Log "Updating: pulling newer published images..."
+    docker compose pull
+    if ($LASTEXITCODE -ne 0) { Die "image pull failed." }
+    Write-Log "Rebuilding in-repo images and re-fetching Leftenant's latest main..."
+    docker compose build --pull
     if ($LASTEXITCODE -ne 0) { Die "image rebuild failed." }
 }
 
