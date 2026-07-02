@@ -100,7 +100,7 @@ log "Provisioner completed successfully."
 LEFT_PORT=$(env_val LEFTENANT_HOST_PORT 4173)
 CS_PORT=$(env_val CHIRPSTACK_HOST_PORT 8080)
 CS_REST_PORT=$(env_val CHIRPSTACK_REST_HOST_PORT 8090)
-HUB_PORT=$(env_val HUB_API_HOST_PORT 5050)
+EVENTS_PORT=$(env_val EVENTS_API_HOST_PORT 5050)
 ADMIN_USER=$(env_val CHIRPSTACK_ADMIN_EMAIL admin)
 ADMIN_PASS=$(env_val CHIRPSTACK_ADMIN_PASSWORD admin)
 
@@ -117,7 +117,7 @@ log "Open in your browser:"
 printf '  %-22s %s\n' "Leftenant (configured)" "http://localhost:${LEFT_PORT}"
 printf '  %-22s %s  (login %s / %s)\n' "ChirpStack admin" "http://localhost:${CS_PORT}" "$ADMIN_USER" "$ADMIN_PASS"
 printf '  %-22s %s\n' "ChirpStack REST API" "http://localhost:${CS_REST_PORT}"
-printf '  %-22s %s\n' "Hub GraphQL IDE" "http://localhost:${HUB_PORT}/graphiql"
+printf '  %-22s %s\n' "Event GraphQL IDE" "http://localhost:${EVENTS_PORT}/graphiql"
 [ -n "$TENANT_ID" ] && printf '\n  Provisioned tenant: "%s" (id %s)\n' "$(env_val TENANT_NAME 'Intelligent Farming')" "$TENANT_ID"
 echo
 log "Done. Tail logs with: $COMPOSE logs -f"

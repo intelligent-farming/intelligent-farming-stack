@@ -1,17 +1,23 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Intelligent Farming Foundation
 #
-# One-command bench: ChirpStack (US915) + Leftenant + Intelligent Farming Hub.
+# One-command bench: ChirpStack (US915) + Leftenant + a standalone events store.
 #
 #   cp .env.example .env && docker compose up -d --build
 #
 # A one-shot `provisioner` runs after ChirpStack is up, creates the
 # "Intelligent Farming" tenant + a tenant API key, and writes the connection
 # artifacts to the `shared` volume. Leftenant boots already configured with that
-# key; the Hub subscribes to every device uplink.
+# key.
 #
-# Leftenant and the Hub build from their sibling repos in this workspace
-# (../leftenant, ../intelligent-farming-hub) — keep them cloned alongside.
+# Device events are stored by ChirpStack's own PostgreSQL integration: ChirpStack
+# writes every event (uplinks, joins, acks, status, …) straight into `events-postgres`,
+# auto-creating its `event_*` tables on first boot. `events-api` (PostGraphile) serves a
+# read-only GraphQL/GraphiQL endpoint over them. No separate collector; nothing here
+# depends on the intelligent-farming-hub repo.
+#
+# Leftenant builds straight from its public repo (github.com/intelligent-farming/leftenant,
+# main) — no local clone needed. Everything else uses published images or builds in-repo.
 name: intelligent-farming-stack
 
 services:
@@ -43,7 +49,7 @@ services:
     image: eclipse-mosquitto:2
     restart: unless-stopped
     ports:
-      - "${MOSQUITTO_MQTT_PORT:-1883}:1883"   # native MQTT (gateways / Hub collector inside the network use the service name)
+      - "${MOSQUITTO_MQTT_PORT:-1883}:1883"   # native MQTT (gateways; in-network clients use the service name)
       - "${MOSQUITTO_WS_PORT:-9001}:9001"     # MQTT over websockets (Leftenant join monitor, browser-side)
     volumes:
       - ./mosquitto:/mosquitto/config/:ro
@@ -59,10 +65,19 @@ services:
       REDIS_HOST: redis
       MQTT_BROKER_HOST: mosquitto
       API_SECRET: ${CHIRPSTACK_API_SECRET:-change-me-please}
+      # PostgreSQL integration target — ChirpStack writes every device event into
+      # this standalone DB and auto-creates the event_* tables there on first boot.
+      # These expand into the [integration.postgresql] dsn in chirpstack/chirpstack.toml.
+      EVENTS_POSTGRESQL_HOST: events-postgres
+      EVENTS_POSTGRESQL_USER: ${EVENTS_POSTGRES_USER:-events}
+      EVENTS_POSTGRESQL_PASSWORD: ${EVENTS_POSTGRES_PASSWORD:-changeme}
+      EVENTS_POSTGRESQL_DB: ${EVENTS_POSTGRES_DB:-chirpstack_events}
     ports:
       - "${CHIRPSTACK_HOST_PORT:-8080}:8080"   # admin UI + gRPC
     depends_on:
       chirpstack-postgres:
+        condition: service_healthy
+      events-postgres:
         condition: service_healthy
       mosquitto:
         condition: service_started
@@ -114,16 +129,22 @@ services:
       LEFTENANT_MQTT_URL: ${LEFTENANT_MQTT_URL:-ws://localhost:9001}
     volumes:
       - shared:/shared
-      # Best-effort codec attach: if the Hub's codecs (git-ignored, bench-only)
-      # are present here, attach-codecs.py runs against the new tenant key.
-      - ../intelligent-farming-hub/codecs:/codecs:ro
+      # Best-effort codec attach: if codec .js files are present at CODECS_DIR,
+      # attach-codecs.py runs against the new tenant key. Optional and orthogonal
+      # to the event store — a missing/empty dir just makes this a no-op. Defaults
+      # to the git-ignored Makerfabs codecs if that repo happens to be cloned
+      # alongside; point CODECS_DIR at any local folder to decouple entirely.
+      - ${CODECS_DIR:-./codecs}:/codecs:ro
     depends_on:
       - chirpstack            # gRPC provisioning target
       - chirpstack-rest-api   # used by the best-effort codec attach
 
   # ── Leftenant (pre-configured provisioning UI) ──────────────────────────────
   leftenant:
-    build: ../leftenant
+    # Builds the latest main from the public repo (not a local clone), so a fresh
+    # `--build` always tracks upstream. Docker clones the git context each build;
+    # force a re-fetch with `docker compose build --no-cache leftenant`.
+    build: https://github.com/intelligent-farming/leftenant.git#main
     restart: unless-stopped
     ports:
       - "${LEFTENANT_HOST_PORT:-4173}:80"
@@ -133,83 +154,95 @@ services:
       provisioner:
         condition: service_completed_successfully
 
-  # ── Intelligent Farming Hub (durable telemetry store) ───────────────────────
-  hub-postgres:
+  # ── Standalone device-event store (ChirpStack PostgreSQL integration target) ──
+  events-postgres:
     image: postgres:16-alpine
     restart: unless-stopped
-    # wal_level is `replica` by default. Set HUB_POSTGRES_WAL_LEVEL=logical (see
+    # wal_level is `replica` by default. Set EVENTS_POSTGRES_WAL_LEVEL=logical (see
     # .env) to enable log-based CDC for Fivetran, then recreate this container:
-    # `docker compose up -d hub-postgres`. The slot/sender counts below are the
+    # `docker compose up -d events-postgres`. The slot/sender counts below are the
     # PG16 defaults, surfaced so one Fivetran slot fits without extra tuning.
     command:
       - "postgres"
       - "-c"
-      - "wal_level=${HUB_POSTGRES_WAL_LEVEL:-replica}"
+      - "wal_level=${EVENTS_POSTGRES_WAL_LEVEL:-replica}"
       - "-c"
-      - "max_wal_senders=${HUB_POSTGRES_MAX_WAL_SENDERS:-10}"
+      - "max_wal_senders=${EVENTS_POSTGRES_MAX_WAL_SENDERS:-10}"
       - "-c"
-      - "max_replication_slots=${HUB_POSTGRES_MAX_REPLICATION_SLOTS:-10}"
+      - "max_replication_slots=${EVENTS_POSTGRES_MAX_REPLICATION_SLOTS:-10}"
     environment:
-      POSTGRES_USER: ${HUB_POSTGRES_USER:-hub}
-      POSTGRES_PASSWORD: ${HUB_POSTGRES_PASSWORD:-changeme}
-      POSTGRES_DB: ${HUB_POSTGRES_DB:-farm}
-      POSTGRES_API_USER: ${HUB_POSTGRES_API_USER:-farm_api}
-      POSTGRES_API_PASSWORD: ${HUB_POSTGRES_API_PASSWORD:-changeme-api}
-      # Opt-in read-only replication role for Fivetran; created by the Hub's
-      # 004_fivetran_replication.sh only when both are set (blank = disabled).
-      POSTGRES_FIVETRAN_USER: ${HUB_POSTGRES_FIVETRAN_USER:-}
-      POSTGRES_FIVETRAN_PASSWORD: ${HUB_POSTGRES_FIVETRAN_PASSWORD:-}
-      POSTGRES_FIVETRAN_PUBLICATION: ${HUB_POSTGRES_FIVETRAN_PUBLICATION:-fivetran_pub}
+      # ChirpStack connects as this owner role and auto-creates the event_* tables.
+      POSTGRES_USER: ${EVENTS_POSTGRES_USER:-events}
+      POSTGRES_PASSWORD: ${EVENTS_POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${EVENTS_POSTGRES_DB:-chirpstack_events}
+      # Read-only role PostGraphile connects as (created by initdb 010_events_roles.sh).
+      POSTGRES_API_USER: ${EVENTS_POSTGRES_API_USER:-events_api}
+      POSTGRES_API_PASSWORD: ${EVENTS_POSTGRES_API_PASSWORD:-changeme-api}
+      # Opt-in read-only replication role for Fivetran; the same init script creates
+      # it (+ publication) only when both are set (blank = disabled).
+      POSTGRES_FIVETRAN_USER: ${EVENTS_POSTGRES_FIVETRAN_USER:-}
+      POSTGRES_FIVETRAN_PASSWORD: ${EVENTS_POSTGRES_FIVETRAN_PASSWORD:-}
+      POSTGRES_FIVETRAN_PUBLICATION: ${EVENTS_POSTGRES_FIVETRAN_PUBLICATION:-fivetran_pub}
     volumes:
-      - hubdata:/var/lib/postgresql/data
-      - ../intelligent-farming-hub/db/migrations:/docker-entrypoint-initdb.d:ro
+      - eventsdata:/var/lib/postgresql/data
+      - ./postgresql/events-initdb:/docker-entrypoint-initdb.d:ro
     ports:
-      # Loopback-only by default. Flip HUB_POSTGRES_HOST_BIND to 0.0.0.0 (or a
+      # Loopback-only by default. Flip EVENTS_POSTGRES_HOST_BIND to 0.0.0.0 (or a
       # specific LAN/VPN address) to let an off-device consumer like Fivetran
       # reach Postgres. Expose beyond the device only over TLS + a firewall
-      # scoped to the consumer's source IPs, using the read-only farm_api role.
-      - "${HUB_POSTGRES_HOST_BIND:-127.0.0.1}:${HUB_POSTGRES_HOST_PORT:-5434}:5432"
+      # scoped to the consumer's source IPs, using the read-only events_api role.
+      - "${EVENTS_POSTGRES_HOST_BIND:-127.0.0.1}:${EVENTS_POSTGRES_HOST_PORT:-5434}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
       timeout: 5s
       retries: 12
 
-  hub-collector:
-    build: ../intelligent-farming-hub/collector
-    restart: unless-stopped
+  # One-shot: block until ChirpStack has created its event_up table, so events-api
+  # introspects a populated schema on first boot (matches the provisioner idiom).
+  events-schema-wait:
+    image: postgres:16-alpine
+    restart: "no"
     environment:
-      # In-network broker + DB (service names on the compose network).
-      MQTT_URL: tcp://mosquitto:1883
-      MQTT_TOPIC: ${HUB_MQTT_TOPIC:-application/+/device/+/event/up}
-      MQTT_CLIENT_ID: ${HUB_MQTT_CLIENT_ID:-if-hub-collector}
-      POSTGRES_HOST: hub-postgres
-      POSTGRES_PORT: "5432"
-      POSTGRES_DB: ${HUB_POSTGRES_DB:-farm}
-      POSTGRES_USER: ${HUB_POSTGRES_USER:-hub}
-      POSTGRES_PASSWORD: ${HUB_POSTGRES_PASSWORD:-changeme}
-      LOG_LEVEL: ${HUB_LOG_LEVEL:-INFO}
+      PGHOST: events-postgres
+      PGUSER: ${EVENTS_POSTGRES_USER:-events}
+      PGPASSWORD: ${EVENTS_POSTGRES_PASSWORD:-changeme}
+      PGDATABASE: ${EVENTS_POSTGRES_DB:-chirpstack_events}
+    entrypoint:
+      - "bash"
+      - "-c"
+      - |
+        echo "waiting for ChirpStack to create public.event_up ..."
+        until [ "$$(psql -tAc "SELECT to_regclass('public.event_up') IS NOT NULL")" = "t" ]; do
+          sleep 2
+        done
+        echo "event_up exists — schema ready"
     depends_on:
-      hub-postgres:
+      events-postgres:
         condition: service_healthy
-      mosquitto:
+      chirpstack:
         condition: service_started
 
-  hub-api:
-    build: ../intelligent-farming-hub/api
+  # ── Read-only GraphQL/GraphiQL over the event store ───────────────────────────
+  events-api:
+    build: ./events-api
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgres://${HUB_POSTGRES_API_USER:-farm_api}:${HUB_POSTGRES_API_PASSWORD:-changeme-api}@hub-postgres:5432/${HUB_POSTGRES_DB:-farm}
-      API_GRAPHIQL: ${HUB_API_GRAPHIQL:-true}
+      # Connects as the read-only events_api role; creds via env (not CLI args) so
+      # they don't show up in the container's process list.
+      DATABASE_URL: postgres://${EVENTS_POSTGRES_API_USER:-events_api}:${EVENTS_POSTGRES_API_PASSWORD:-changeme-api}@events-postgres:5432/${EVENTS_POSTGRES_DB:-chirpstack_events}
+      API_GRAPHIQL: ${EVENTS_API_GRAPHIQL:-true}
     ports:
       # host 5050 by default: port 5000 is taken by the macOS AirPlay Receiver.
-      - "${HUB_API_HOST_BIND:-127.0.0.1}:${HUB_API_HOST_PORT:-5050}:5000"
+      - "${EVENTS_API_HOST_BIND:-127.0.0.1}:${EVENTS_API_HOST_PORT:-5050}:5000"
     depends_on:
-      hub-postgres:
+      events-postgres:
         condition: service_healthy
+      events-schema-wait:
+        condition: service_completed_successfully
 
 volumes:
   chirpstack-pgdata:
   redisdata:
-  hubdata:
+  eventsdata:
   shared:

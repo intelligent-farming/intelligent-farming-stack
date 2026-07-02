@@ -2,13 +2,14 @@
 #
 # Vendored and trimmed from the upstream chirpstack-docker example
 # (https://github.com/chirpstack/chirpstack-docker, MIT — see NOTICE):
-#   - integration reduced to MQTT only (the Hub is our durable store; we don't
-#     run ChirpStack's bundled PostGraphile / chirpstack_integration DB)
+#   - integrations: MQTT (Leftenant's browser join monitor subscribes to it) plus
+#     PostgreSQL, which writes every device event into the standalone events-postgres
+#     DB and auto-creates its event_* tables on first boot (our durable store)
 #   - enabled_regions trimmed to US915 sub-bands 0 and 1
 #   - hostnames + API secret read from the environment (set in docker-compose.yml)
 #
-# $POSTGRESQL_HOST, $REDIS_HOST, $MQTT_BROKER_HOST and $API_SECRET are expanded
-# from the container environment at startup.
+# $POSTGRESQL_HOST, $REDIS_HOST, $MQTT_BROKER_HOST, $API_SECRET and the
+# $EVENTS_POSTGRESQL_* vars are expanded from the container environment at startup.
 
 [logging]
   level="info"
@@ -46,8 +47,17 @@
   secret="$API_SECRET"
 
 [integration]
-  enabled=["mqtt"]
+  enabled=["mqtt", "postgresql"]
 
   [integration.mqtt]
     server="tcp://$MQTT_BROKER_HOST:1883/"
     json=true
+
+  # Writes every device event (uplinks, joins, acks, tx-acks, status, location,
+  # log, integration) into the standalone events-postgres DB. ChirpStack runs its
+  # own migrations against this DB on startup, creating the event_* tables — no
+  # schema to maintain here. events-api (PostGraphile) reads them over GraphQL.
+  [integration.postgresql]
+    dsn="postgres://$EVENTS_POSTGRESQL_USER:$EVENTS_POSTGRESQL_PASSWORD@$EVENTS_POSTGRESQL_HOST/$EVENTS_POSTGRESQL_DB?sslmode=disable"
+    max_open_connections=10
+    min_idle_connections=0

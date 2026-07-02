@@ -3,10 +3,13 @@
 Guidance for AI coding agents (Claude Code, Copilot, etc.) and human contributors. Read this before generating or committing code. Standard across all Intelligent Farming Foundation repositories.
 
 ## What this repo is
-A one-command docker-compose bench that boots ChirpStack (US915), Leftenant, and the
-Intelligent Farming Hub together, auto-provisions an "Intelligent Farming" tenant + API key, and
-wires everything so a fresh device runs `docker compose up` and is ready. Leftenant and the Hub
-build from their sibling repos (`../leftenant`, `../intelligent-farming-hub`).
+A one-command docker-compose bench that boots ChirpStack (US915), Leftenant, and a standalone
+device-event store together, auto-provisions an "Intelligent Farming" tenant + API key, and
+wires everything so a fresh device runs `docker compose up` and is ready. Device events are
+stored by ChirpStack's own PostgreSQL integration into `events-postgres` (it auto-creates the
+`event_*` tables); `events-api` (PostGraphile) serves read-only GraphQL over them. Leftenant builds
+from its public repo (`github.com/intelligent-farming/leftenant`, main) — no sibling clone needed,
+and this stack does not depend on `intelligent-farming-hub`.
 
 ## Project & licensing (non-negotiable)
 - Licensed GNU AGPL-3.0-or-later. The full text is in LICENSE at the repo root — never modify, move, or remove it.
@@ -37,8 +40,10 @@ Do not paste the full license into source files — the header points to LICENSE
 
 ## Bench-only posture (do not ship as-is)
 - `mosquitto.conf` allows anonymous MQTT; ChirpStack admin defaults to admin/admin; the API
-  secret default is a placeholder; the Hub API/DB bind to loopback. These are bench defaults.
-  Anything network-exposed needs real auth, TLS, and a rotated `CHIRPSTACK_API_SECRET`.
+  secret default is a placeholder; the event API/DB (`events-api`/`events-postgres`) bind to
+  loopback. These are bench defaults. Anything network-exposed needs real auth, TLS, and a
+  rotated `CHIRPSTACK_API_SECRET`. Exposing `events-postgres` for Fivetran is opt-in via
+  `EVENTS_POSTGRES_HOST_BIND` + `EVENTS_POSTGRES_WAL_LEVEL` — see the README.
 
 ## Per-PR checklist
 - New files have the SPDX + copyright header

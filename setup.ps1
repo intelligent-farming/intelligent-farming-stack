@@ -124,7 +124,7 @@ Write-Log "Provisioner completed successfully."
 $leftPort  = Get-EnvVal 'LEFTENANT_HOST_PORT' '4173'
 $csPort    = Get-EnvVal 'CHIRPSTACK_HOST_PORT' '8080'
 $csRest    = Get-EnvVal 'CHIRPSTACK_REST_HOST_PORT' '8090'
-$hubPort   = Get-EnvVal 'HUB_API_HOST_PORT' '5050'
+$eventsPort = Get-EnvVal 'EVENTS_API_HOST_PORT' '5050'
 $adminUser = Get-EnvVal 'CHIRPSTACK_ADMIN_EMAIL' 'admin'
 $adminPass = Get-EnvVal 'CHIRPSTACK_ADMIN_PASSWORD' 'admin'
 $tenantNm  = Get-EnvVal 'TENANT_NAME' 'Intelligent Farming'
@@ -145,7 +145,7 @@ Write-Log "Open in your browser:"
 Write-Host ("  {0,-22} http://localhost:{1}" -f 'Leftenant (configured)', $leftPort)
 Write-Host ("  {0,-22} http://localhost:{1}  (login {2} / {3})" -f 'ChirpStack admin', $csPort, $adminUser, $adminPass)
 Write-Host ("  {0,-22} http://localhost:{1}" -f 'ChirpStack REST API', $csRest)
-Write-Host ("  {0,-22} http://localhost:{1}/graphiql" -f 'Hub GraphQL IDE', $hubPort)
+Write-Host ("  {0,-22} http://localhost:{1}/graphiql" -f 'Event GraphQL IDE', $eventsPort)
 if ($tenantId) {
     Write-Host ""
     Write-Host ("  Provisioned tenant: ""{0}"" (id {1})" -f $tenantNm, $tenantId)
