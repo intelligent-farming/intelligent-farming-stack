@@ -1,0 +1,15 @@
+# env / secrets — never commit API keys, secrets, or connection URLs
+.env
+.env.local
+.env.*.local
+
+# bench-only codec payloads (Makerfabs-derived, not redistributable)
+codecs/*.js
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+Thumbs.db

@@ -1,0 +1,215 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Intelligent Farming Foundation
+#
+# One-command bench: ChirpStack (US915) + Leftenant + Intelligent Farming Hub.
+#
+#   cp .env.example .env && docker compose up -d --build
+#
+# A one-shot `provisioner` runs after ChirpStack is up, creates the
+# "Intelligent Farming" tenant + a tenant API key, and writes the connection
+# artifacts to the `shared` volume. Leftenant boots already configured with that
+# key; the Hub subscribes to every device uplink.
+#
+# Leftenant and the Hub build from their sibling repos in this workspace
+# (../leftenant, ../intelligent-farming-hub) — keep them cloned alongside.
+name: intelligent-farming-stack
+
+services:
+  # ── ChirpStack core ────────────────────────────────────────────────────────
+  chirpstack-postgres:
+    image: postgres:14-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: chirpstack
+      POSTGRES_PASSWORD: chirpstack
+      POSTGRES_DB: chirpstack
+    volumes:
+      - ./postgresql/initdb:/docker-entrypoint-initdb.d:ro
+      - chirpstack-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chirpstack -d chirpstack"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --save 300 1 --save 60 100 --appendonly no
+    volumes:
+      - redisdata:/data
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    ports:
+      - "${MOSQUITTO_MQTT_PORT:-1883}:1883"   # native MQTT (gateways / Hub collector inside the network use the service name)
+      - "${MOSQUITTO_WS_PORT:-9001}:9001"     # MQTT over websockets (Leftenant join monitor, browser-side)
+    volumes:
+      - ./mosquitto:/mosquitto/config/:ro
+
+  chirpstack:
+    image: chirpstack/chirpstack:4
+    restart: unless-stopped
+    command: -c /etc/chirpstack
+    volumes:
+      - ./chirpstack:/etc/chirpstack:ro
+    environment:
+      POSTGRESQL_HOST: chirpstack-postgres
+      REDIS_HOST: redis
+      MQTT_BROKER_HOST: mosquitto
+      API_SECRET: ${CHIRPSTACK_API_SECRET:-change-me-please}
+    ports:
+      - "${CHIRPSTACK_HOST_PORT:-8080}:8080"   # admin UI + gRPC
+    depends_on:
+      chirpstack-postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+      redis:
+        condition: service_started
+
+  chirpstack-rest-api:
+    image: chirpstack/chirpstack-rest-api:4
+    restart: unless-stopped
+    # --cors must match the browser origin Leftenant is served from. Override
+    # LEFTENANT_ORIGIN in .env when reaching the bench by LAN IP instead of localhost.
+    command: --server chirpstack:8080 --bind 0.0.0.0:8090 --insecure --cors ${LEFTENANT_ORIGIN:-http://localhost:4173}
+    ports:
+      - "${CHIRPSTACK_REST_HOST_PORT:-8090}:8090"
+    depends_on:
+      - chirpstack
+
+  chirpstack-gateway-bridge:
+    image: chirpstack/chirpstack-gateway-bridge:4
+    restart: unless-stopped
+    ports:
+      - "${GATEWAY_BRIDGE_UDP_PORT:-1700}:1700/udp"   # Semtech UDP packet forwarder
+    volumes:
+      - ./gateway-bridge:/etc/chirpstack-gateway-bridge:ro
+    environment:
+      INTEGRATION__MQTT__EVENT_TOPIC_TEMPLATE: us915_0/gateway/{{ .GatewayID }}/event/{{ .EventType }}
+      INTEGRATION__MQTT__STATE_TOPIC_TEMPLATE: us915_0/gateway/{{ .GatewayID }}/state/{{ .StateType }}
+      INTEGRATION__MQTT__COMMAND_TOPIC_TEMPLATE: us915_0/gateway/{{ .GatewayID }}/command/#
+    depends_on:
+      - mosquitto
+
+  # ── Provisioner (one-shot) ──────────────────────────────────────────────────
+  provisioner:
+    build: ./provisioning
+    restart: "no"
+    environment:
+      # Provisioning (login, tenant, api-key) goes over gRPC — the REST gateway
+      # does not expose InternalService/ApiKeyService.
+      CHIRPSTACK_GRPC: chirpstack:8080
+      # REST endpoint passed to attach-codecs.py (codec attach uses REST).
+      CHIRPSTACK_REST_URL: http://chirpstack-rest-api:8090
+      CHIRPSTACK_ADMIN_EMAIL: ${CHIRPSTACK_ADMIN_EMAIL:-admin}
+      CHIRPSTACK_ADMIN_PASSWORD: ${CHIRPSTACK_ADMIN_PASSWORD:-admin}
+      TENANT_NAME: ${TENANT_NAME:-Intelligent Farming}
+      API_KEY_NAME: ${API_KEY_NAME:-intelligent-farming-stack}
+      # Browser-facing URLs written into Leftenant's config.json. Change these
+      # (and LEFTENANT_ORIGIN above) when the bench is reached by LAN IP.
+      LEFTENANT_CHIRPSTACK_URL: ${LEFTENANT_CHIRPSTACK_URL:-http://localhost:8090}
+      LEFTENANT_MQTT_URL: ${LEFTENANT_MQTT_URL:-ws://localhost:9001}
+    volumes:
+      - shared:/shared
+      # Best-effort codec attach: if the Hub's codecs (git-ignored, bench-only)
+      # are present here, attach-codecs.py runs against the new tenant key.
+      - ../intelligent-farming-hub/codecs:/codecs:ro
+    depends_on:
+      - chirpstack            # gRPC provisioning target
+      - chirpstack-rest-api   # used by the best-effort codec attach
+
+  # ── Leftenant (pre-configured provisioning UI) ──────────────────────────────
+  leftenant:
+    build: ../leftenant
+    restart: unless-stopped
+    ports:
+      - "${LEFTENANT_HOST_PORT:-4173}:80"
+    volumes:
+      - shared:/shared:ro   # entrypoint reads /shared/config.json written by the provisioner
+    depends_on:
+      provisioner:
+        condition: service_completed_successfully
+
+  # ── Intelligent Farming Hub (durable telemetry store) ───────────────────────
+  hub-postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    # wal_level is `replica` by default. Set HUB_POSTGRES_WAL_LEVEL=logical (see
+    # .env) to enable log-based CDC for Fivetran, then recreate this container:
+    # `docker compose up -d hub-postgres`. The slot/sender counts below are the
+    # PG16 defaults, surfaced so one Fivetran slot fits without extra tuning.
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=${HUB_POSTGRES_WAL_LEVEL:-replica}"
+      - "-c"
+      - "max_wal_senders=${HUB_POSTGRES_MAX_WAL_SENDERS:-10}"
+      - "-c"
+      - "max_replication_slots=${HUB_POSTGRES_MAX_REPLICATION_SLOTS:-10}"
+    environment:
+      POSTGRES_USER: ${HUB_POSTGRES_USER:-hub}
+      POSTGRES_PASSWORD: ${HUB_POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${HUB_POSTGRES_DB:-farm}
+      POSTGRES_API_USER: ${HUB_POSTGRES_API_USER:-farm_api}
+      POSTGRES_API_PASSWORD: ${HUB_POSTGRES_API_PASSWORD:-changeme-api}
+      # Opt-in read-only replication role for Fivetran; created by the Hub's
+      # 004_fivetran_replication.sh only when both are set (blank = disabled).
+      POSTGRES_FIVETRAN_USER: ${HUB_POSTGRES_FIVETRAN_USER:-}
+      POSTGRES_FIVETRAN_PASSWORD: ${HUB_POSTGRES_FIVETRAN_PASSWORD:-}
+      POSTGRES_FIVETRAN_PUBLICATION: ${HUB_POSTGRES_FIVETRAN_PUBLICATION:-fivetran_pub}
+    volumes:
+      - hubdata:/var/lib/postgresql/data
+      - ../intelligent-farming-hub/db/migrations:/docker-entrypoint-initdb.d:ro
+    ports:
+      # Loopback-only by default. Flip HUB_POSTGRES_HOST_BIND to 0.0.0.0 (or a
+      # specific LAN/VPN address) to let an off-device consumer like Fivetran
+      # reach Postgres. Expose beyond the device only over TLS + a firewall
+      # scoped to the consumer's source IPs, using the read-only farm_api role.
+      - "${HUB_POSTGRES_HOST_BIND:-127.0.0.1}:${HUB_POSTGRES_HOST_PORT:-5434}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  hub-collector:
+    build: ../intelligent-farming-hub/collector
+    restart: unless-stopped
+    environment:
+      # In-network broker + DB (service names on the compose network).
+      MQTT_URL: tcp://mosquitto:1883
+      MQTT_TOPIC: ${HUB_MQTT_TOPIC:-application/+/device/+/event/up}
+      MQTT_CLIENT_ID: ${HUB_MQTT_CLIENT_ID:-if-hub-collector}
+      POSTGRES_HOST: hub-postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${HUB_POSTGRES_DB:-farm}
+      POSTGRES_USER: ${HUB_POSTGRES_USER:-hub}
+      POSTGRES_PASSWORD: ${HUB_POSTGRES_PASSWORD:-changeme}
+      LOG_LEVEL: ${HUB_LOG_LEVEL:-INFO}
+    depends_on:
+      hub-postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+
+  hub-api:
+    build: ../intelligent-farming-hub/api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${HUB_POSTGRES_API_USER:-farm_api}:${HUB_POSTGRES_API_PASSWORD:-changeme-api}@hub-postgres:5432/${HUB_POSTGRES_DB:-farm}
+      API_GRAPHIQL: ${HUB_API_GRAPHIQL:-true}
+    ports:
+      # host 5050 by default: port 5000 is taken by the macOS AirPlay Receiver.
+      - "${HUB_API_HOST_BIND:-127.0.0.1}:${HUB_API_HOST_PORT:-5050}:5000"
+    depends_on:
+      hub-postgres:
+        condition: service_healthy
+
+volumes:
+  chirpstack-pgdata:
+  redisdata:
+  hubdata:
+  shared:

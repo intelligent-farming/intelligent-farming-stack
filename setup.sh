@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Intelligent Farming Foundation
+#
+# One-command setup for the intelligent-farming-stack bench. Verifies
+# prerequisites, creates .env if missing, builds + starts the whole stack, and
+# waits for the one-shot provisioner (tenant + API key) to finish, then prints
+# where to reach everything.
+#
+# Usage:
+#   ./setup.sh            # build (if needed) + start + provision
+#   ./setup.sh --rebuild  # force a clean image rebuild
+#   ./setup.sh --down     # stop and remove the stack (keeps data volumes)
+#   ./setup.sh --reset    # stop and remove the stack AND its data volumes
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33mwarning:\033[0m %s\n' "$*" >&2; }
+die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+
+# Read a KEY=value from .env (after it exists), falling back to a default.
+# Strips inline "# comments" and surrounding whitespace.
+env_val() {
+  local key="$1" default="$2" line val
+  line=$(grep -E "^${key}=" .env 2>/dev/null | tail -1 || true)
+  if [ -z "$line" ]; then printf '%s' "$default"; return; fi
+  val=${line#*=}
+  val=$(printf '%s' "$val" | sed -E 's/[[:space:]]+#.*$//; s/^[[:space:]]+//; s/[[:space:]]+$//')
+  printf '%s' "$val"
+}
+
+COMPOSE="docker compose"
+
+# ── teardown modes ───────────────────────────────────────────────────────────
+case "${1:-}" in
+  --down)
+    log "Stopping stack (data volumes preserved)…"
+    $COMPOSE down
+    exit 0
+    ;;
+  --reset)
+    log "Stopping stack and REMOVING data volumes…"
+    $COMPOSE down -v
+    exit 0
+    ;;
+esac
+
+# ── prerequisites ────────────────────────────────────────────────────────────
+command -v docker >/dev/null 2>&1 || die "docker is not installed or not on PATH."
+docker compose version >/dev/null 2>&1 || die "docker compose v2 is required (got none)."
+docker info >/dev/null 2>&1 || die "the Docker daemon is not running — start Docker Desktop and retry."
+
+# Leftenant and the Hub build from their sibling repos in this workspace.
+for repo in ../leftenant ../intelligent-farming-hub; do
+  [ -d "$repo" ] || die "missing sibling repo '$repo' — clone it alongside this one (see README)."
+done
+
+# Heads-up if the default ports are already taken (e.g. a separate
+# chirpstack-docker stack). Only one stack can hold these at a time.
+for p in 1883 8080 8090; do
+  if lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1; then
+    warn "TCP port $p is already in use — if this is another ChirpStack/Mosquitto, stop it first or change the *_PORT vars in .env."
+  fi
+done
+
+# ── .env ─────────────────────────────────────────────────────────────────────
+if [ ! -f .env ]; then
+  log "Creating .env from .env.example (defaults work for a localhost bench)."
+  cp .env.example .env
+else
+  log "Using existing .env."
+fi
+
+# ── build + up ───────────────────────────────────────────────────────────────
+BUILD_FLAG="--build"
+if [ "${1:-}" = "--rebuild" ]; then
+  log "Forcing a clean rebuild of locally-built images…"
+  $COMPOSE build --no-cache
+fi
+
+log "Starting the stack (this also runs the provisioner)…"
+# `up` blocks until the provisioner exits, because leftenant depends on it with
+# condition: service_completed_successfully.
+$COMPOSE up -d $BUILD_FLAG
+
+# ── verify the provisioner succeeded ─────────────────────────────────────────
+PROV_RC=$(docker inspect -f '{{.State.ExitCode}}' \
+  "$($COMPOSE ps -aq provisioner | tail -1)" 2>/dev/null || echo "unknown")
+if [ "$PROV_RC" != "0" ]; then
+  warn "provisioner exit code = $PROV_RC. Recent logs:"
+  $COMPOSE logs --tail 20 provisioner || true
+  die "provisioning did not complete cleanly — see the logs above."
+fi
+log "Provisioner completed successfully."
+
+# ── report ───────────────────────────────────────────────────────────────────
+LEFT_PORT=$(env_val LEFTENANT_HOST_PORT 4173)
+CS_PORT=$(env_val CHIRPSTACK_HOST_PORT 8080)
+CS_REST_PORT=$(env_val CHIRPSTACK_REST_HOST_PORT 8090)
+HUB_PORT=$(env_val HUB_API_HOST_PORT 5050)
+ADMIN_USER=$(env_val CHIRPSTACK_ADMIN_EMAIL admin)
+ADMIN_PASS=$(env_val CHIRPSTACK_ADMIN_PASSWORD admin)
+
+echo
+log "Stack is up. Service status:"
+$COMPOSE ps --format '  {{.Service}}\t{{.Status}}'
+
+# Tenant id from the config Leftenant now serves (best-effort).
+TENANT_ID=$(curl -fsS "http://localhost:${LEFT_PORT}/config.json" 2>/dev/null \
+  | sed -n 's/.*"tenantId": *"\([^"]*\)".*/\1/p' || true)
+
+echo
+log "Open in your browser:"
+printf '  %-22s %s\n' "Leftenant (configured)" "http://localhost:${LEFT_PORT}"
+printf '  %-22s %s  (login %s / %s)\n' "ChirpStack admin" "http://localhost:${CS_PORT}" "$ADMIN_USER" "$ADMIN_PASS"
+printf '  %-22s %s\n' "ChirpStack REST API" "http://localhost:${CS_REST_PORT}"
+printf '  %-22s %s\n' "Hub GraphQL IDE" "http://localhost:${HUB_PORT}/graphiql"
+[ -n "$TENANT_ID" ] && printf '\n  Provisioned tenant: "%s" (id %s)\n' "$(env_val TENANT_NAME 'Intelligent Farming')" "$TENANT_ID"
+echo
+log "Done. Tail logs with: $COMPOSE logs -f"

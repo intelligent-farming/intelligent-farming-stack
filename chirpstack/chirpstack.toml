@@ -1,0 +1,53 @@
+# ChirpStack v4 server configuration for the intelligent-farming-stack bench.
+#
+# Vendored and trimmed from the upstream chirpstack-docker example
+# (https://github.com/chirpstack/chirpstack-docker, MIT — see NOTICE):
+#   - integration reduced to MQTT only (the Hub is our durable store; we don't
+#     run ChirpStack's bundled PostGraphile / chirpstack_integration DB)
+#   - enabled_regions trimmed to US915 sub-bands 0 and 1
+#   - hostnames + API secret read from the environment (set in docker-compose.yml)
+#
+# $POSTGRESQL_HOST, $REDIS_HOST, $MQTT_BROKER_HOST and $API_SECRET are expanded
+# from the container environment at startup.
+
+[logging]
+  level="info"
+
+[postgresql]
+  dsn="postgres://chirpstack:chirpstack@$POSTGRESQL_HOST/chirpstack?sslmode=disable"
+  max_open_connections=10
+  min_idle_connections=0
+
+[redis]
+  servers=[
+    "redis://$REDIS_HOST/",
+  ]
+  tls_enabled=false
+  cluster=false
+
+[network]
+  # Network identifier (NetID, 3 bytes) encoded as HEX. 000000 is the standard
+  # value for a private/experimental network.
+  net_id="000000"
+
+  # US915. Sub-band 0 (channels 0-7) and sub-band 1 (channels 8-15) cover the
+  # two sub-bands US 8-channel gateways are commonly configured for. The matching
+  # region_us915_0.toml / region_us915_1.toml files live alongside this file.
+  enabled_regions=[
+    "us915_0",
+    "us915_1",
+  ]
+
+[api]
+  bind="0.0.0.0:8080"
+  # Signs login + API tokens. Read from the environment so it can be rotated
+  # without editing this file; changing it invalidates all existing tokens.
+  # Generate one with: openssl rand -base64 32
+  secret="$API_SECRET"
+
+[integration]
+  enabled=["mqtt"]
+
+  [integration.mqtt]
+    server="tcp://$MQTT_BROKER_HOST:1883/"
+    json=true

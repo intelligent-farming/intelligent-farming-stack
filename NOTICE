@@ -1,0 +1,23 @@
+intelligent-farming-stack
+Copyright (C) 2026 Intelligent Farming Foundation
+
+This product includes software developed by Intelligent Farming Foundation
+and the intelligent-farming-stack contributors.
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or (at your
+option) any later version. See the LICENSE file for the full text.
+
+Third-party components included in this repository retain their own
+licenses and copyright notices:
+
+- ChirpStack configuration files under chirpstack/, mosquitto/, gateway-bridge/,
+  and postgresql/ are vendored and adapted from the chirpstack-docker project
+  (https://github.com/chirpstack/chirpstack-docker), licensed MIT,
+  Copyright (c) ChirpStack / Orne Brocaar.
+
+- Container images referenced by docker-compose.yml (chirpstack/chirpstack,
+  chirpstack/chirpstack-rest-api, chirpstack/chirpstack-gateway-bridge,
+  eclipse-mosquitto, postgres, redis, graphile/postgraphile) are pulled at runtime
+  and retain their own upstream licenses.
