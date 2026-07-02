@@ -31,12 +31,13 @@
   # value for a private/experimental network.
   net_id="000000"
 
-  # US915. Sub-band 0 (channels 0-7) and sub-band 1 (channels 8-15) cover the
-  # two sub-bands US 8-channel gateways are commonly configured for. The matching
-  # region_us915_0.toml / region_us915_1.toml files live alongside this file.
+  # Active region/sub-band, driven by the REGION env flag (default us915_0; set it
+  # in .env). $REGION is expanded from the container environment at startup and
+  # must name a region file present alongside this one — region_us915_0.toml and
+  # region_us915_1.toml ship with the stack (channels 0-7 and 8-15 respectively).
+  # For another band, add its region_<id>.toml here and set REGION=<id>.
   enabled_regions=[
-    "us915_0",
-    "us915_1",
+    "$REGION",
   ]
 
 [api]

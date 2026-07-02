@@ -176,7 +176,8 @@ adds the PostgreSQL integration, which is the durable store `events-api` reads f
 | 8090 | chirpstack-rest-api | REST API (Leftenant); CORS allow-origin = `LEFTENANT_ORIGIN` |
 | 1883 | mosquitto | native MQTT |
 | 9001 | mosquitto | MQTT over websockets |
-| 1700/udp | chirpstack-gateway-bridge | Semtech UDP packet forwarder |
+| 1700/udp | chirpstack-gateway-bridge | Semtech UDP packet-forwarder gateways |
+| 3001 | chirpstack-gateway-bridge-basicstation | BasicStation gateways (LNS WebSocket) |
 | 5050 | events-api | GraphQL (loopback by default; 5000 avoided — macOS AirPlay) |
 | 5434 | events-postgres | host-side psql/export; loopback by default — `EVENTS_POSTGRES_HOST_BIND` to expose (see below) |
 
@@ -223,11 +224,65 @@ available on every column. At bench volumes the unindexed scans are fine; add in
 > ChirpStack has created `event_up`, so the GraphQL schema is populated on the first `up` (no manual
 > restart). Send one device uplink (or trigger a join) to see rows.
 
-## Region
+## Region / sub-band
 
-Defaults to US915 (sub-bands 0 and 1). To change region, swap the `chirpstack/region_*.toml`
-file(s) for the target region and update `network.enabled_regions` in `chirpstack/chirpstack.toml`
-(region files for every band are available in the upstream chirpstack-docker project).
+The active band is a single flag, **`REGION`** in `.env` (default `us915_0` — US915 channels 0-7).
+It drives everything that has to agree on the band: ChirpStack's `enabled_regions`, both gateway
+bridges' MQTT topic prefix, and the BasicStation channel-plan file. Change it and recreate:
+
+```sh
+# .env
+REGION=us915_1        # US915 channels 8-15
+
+docker compose up -d      # recreates the affected services
+```
+
+`us915_0` and `us915_1` ship ready to use. To run **any other band**, add its two config files, then
+set `REGION` to that id:
+
+- `chirpstack/region_<id>.toml` — the ChirpStack region file (its `id` and `topic_prefix` must equal
+  `<id>`); region files for every band are in the upstream chirpstack-docker project.
+- `gateway-bridge/chirpstack-gateway-bridge-basicstation-<id>.toml` — only if you use BasicStation
+  gateways (Semtech UDP gateways need no per-band file).
+
+> All gateway RF settings (frequencies, sub-band) come from `REGION`; only one band is enabled at a
+> time. An 8-channel US915 gateway is configured for one sub-band — match `REGION` to it.
+
+## Connecting a gateway
+
+Register the gateway in ChirpStack (via Leftenant or the admin UI) under the provisioned tenant, with
+its **Gateway EUI**. Make sure the gateway's sub-band matches the [`REGION`](#region--sub-band) flag
+(default `us915_0`). Then point the gateway's packet forwarder at this host — the stack runs a bridge
+for **both** gateway protocols, both tagged with the `REGION` topic prefix so ChirpStack handles them
+identically:
+
+| Gateway protocol | Point it at | Host port to allow |
+|------------------|-------------|--------------------|
+| **Semtech UDP** packet forwarder (legacy `global_conf.json`) | `<this-host-ip>` : **1700**, UDP | UDP 1700 |
+| **BasicStation** (LNS) | LNS/`tc` URI `ws://<this-host-ip>:3001` | TCP 3001 |
+
+`<this-host-ip>` is the machine's LAN IP (`ipconfig` on Windows, `ip addr` / `ifconfig` on
+macOS/Linux) — not `localhost`, and not the address of any previous server the gateway used.
+
+Windows notes:
+- Allow the relevant inbound port through Windows Firewall (admin PowerShell) — UDP 1700 for Semtech,
+  or TCP 3001 for BasicStation:
+  ```powershell
+  New-NetFirewallRule -DisplayName "LoRa BasicStation 3001" -Direction Inbound -Protocol TCP -LocalPort 3001 -Action Allow
+  ```
+- BasicStation on this bench uses plain `ws://` (no TLS); set the gateway's LNS URI accordingly and,
+  if it defaults to CUPS, either disable CUPS or have it fall back to the LNS URI.
+
+Verify frames are arriving, in order of the data path:
+
+```sh
+docker compose logs -f chirpstack-gateway-bridge-basicstation   # BasicStation: expect the gateway to connect
+docker compose logs -f chirpstack-gateway-bridge                 # Semtech UDP: expect periodic stats
+docker compose exec mosquitto mosquitto_sub -t "+/gateway/#" -v   # frames on the broker (any REGION)
+```
+
+If the bridge log shows the gateway but ChirpStack still reads "never seen", the registered Gateway
+EUI doesn't match what the gateway reports.
 
 ## Codecs (optional)
 

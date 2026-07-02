@@ -66,6 +66,9 @@ services:
       REDIS_HOST: redis
       MQTT_BROKER_HOST: mosquitto
       API_SECRET: ${CHIRPSTACK_API_SECRET:-change-me-please}
+      # Active region/sub-band. Expands into enabled_regions in chirpstack.toml and
+      # must match the gateway bridges' topic prefix (both use REGION). Default us915_0.
+      REGION: ${REGION:-us915_0}
       # PostgreSQL integration target — ChirpStack writes every device event into
       # this standalone DB and auto-creates the event_* tables there on first boot.
       # These expand into the [integration.postgresql] dsn in chirpstack/chirpstack.toml.
@@ -96,6 +99,10 @@ services:
     depends_on:
       - chirpstack
 
+  # Semtech UDP packet-forwarder gateways (legacy protocol, UDP :1700).
+  # The MQTT topic prefix is the REGION flag (default us915_0 — see .env), and must
+  # match ChirpStack's enabled region. Flip REGION to us915_1 (or any band whose
+  # region file is present) to change sub-band.
   chirpstack-gateway-bridge:
     image: chirpstack/chirpstack-gateway-bridge:4
     restart: unless-stopped
@@ -104,9 +111,29 @@ services:
     volumes:
       - ./gateway-bridge:/etc/chirpstack-gateway-bridge:ro
     environment:
-      INTEGRATION__MQTT__EVENT_TOPIC_TEMPLATE: us915_0/gateway/{{ .GatewayID }}/event/{{ .EventType }}
-      INTEGRATION__MQTT__STATE_TOPIC_TEMPLATE: us915_0/gateway/{{ .GatewayID }}/state/{{ .StateType }}
-      INTEGRATION__MQTT__COMMAND_TOPIC_TEMPLATE: us915_0/gateway/{{ .GatewayID }}/command/#
+      INTEGRATION__MQTT__EVENT_TOPIC_TEMPLATE: ${REGION:-us915_0}/gateway/{{ .GatewayID }}/event/{{ .EventType }}
+      INTEGRATION__MQTT__STATE_TOPIC_TEMPLATE: ${REGION:-us915_0}/gateway/{{ .GatewayID }}/state/{{ .StateType }}
+      INTEGRATION__MQTT__COMMAND_TOPIC_TEMPLATE: ${REGION:-us915_0}/gateway/{{ .GatewayID }}/command/#
+    depends_on:
+      - mosquitto
+
+  # BasicStation gateways (LNS WebSocket, TCP :3001). Same REGION topic prefix as the
+  # UDP bridge, so ChirpStack handles both. Point the gateway's LNS/tc URI at
+  # ws://<this-host-ip>:3001. The REGION flag also selects the channel-plan file
+  # (chirpstack-gateway-bridge-basicstation-${REGION}.toml) — us915_0 and us915_1
+  # ship with the stack; add gateway-bridge/…-<band>.toml for other bands.
+  chirpstack-gateway-bridge-basicstation:
+    image: chirpstack/chirpstack-gateway-bridge:4
+    restart: unless-stopped
+    command: -c /etc/chirpstack-gateway-bridge/chirpstack-gateway-bridge-basicstation-${REGION:-us915_0}.toml
+    ports:
+      - "${GATEWAY_BRIDGE_BASICSTATION_PORT:-3001}:3001"   # BasicStation LNS WebSocket
+    volumes:
+      - ./gateway-bridge:/etc/chirpstack-gateway-bridge:ro
+    environment:
+      INTEGRATION__MQTT__EVENT_TOPIC_TEMPLATE: ${REGION:-us915_0}/gateway/{{ .GatewayID }}/event/{{ .EventType }}
+      INTEGRATION__MQTT__STATE_TOPIC_TEMPLATE: ${REGION:-us915_0}/gateway/{{ .GatewayID }}/state/{{ .StateType }}
+      INTEGRATION__MQTT__COMMAND_TOPIC_TEMPLATE: ${REGION:-us915_0}/gateway/{{ .GatewayID }}/command/#
     depends_on:
       - mosquitto
 

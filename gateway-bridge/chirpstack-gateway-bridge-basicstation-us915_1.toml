@@ -1,0 +1,53 @@
+# ChirpStack Gateway Bridge — BasicStation backend, US915 sub-band 1.
+#
+# Vendored from the upstream chirpstack-docker example (MIT — see NOTICE):
+#   configuration/chirpstack-gateway-bridge/chirpstack-gateway-bridge-basicstation-us915_1.toml
+#
+# Selected by the REGION flag: the basicstation bridge loads
+# chirpstack-gateway-bridge-basicstation-${REGION}.toml (see docker-compose.yml / .env).
+# The MQTT topic templates come from the environment (also driven by REGION), so
+# only the MQTT auth + the BasicStation backend/channel-plan live in this file.
+
+[integration.mqtt.auth.generic]
+  servers=["tcp://mosquitto:1883"]
+  username=""
+  password=""
+
+[backend]
+  type="basic_station"
+
+  [backend.basic_station]
+  # ip:port to bind the websocket listener to.
+  bind="0.0.0.0:3001"
+
+  # TLS is disabled for this bench (plain ws://). For wss:// set these and the
+  # matching CA on the gateway.
+  tls_cert=""
+  tls_key=""
+  ca_cert=""
+
+  # LoRaWAN region + frequency window advertised to the gateway.
+  region="US915"
+  frequency_min=923000000
+  frequency_max=928000000
+
+    # Concentrator channel plan for US915 sub-band 1 (channels 8-15 + the 500 kHz
+    # uplink channel). BasicStation requests this as its router_config on connect.
+    [[backend.basic_station.concentrators]]
+
+      [backend.basic_station.concentrators.multi_sf]
+      frequencies=[
+        903900000,
+        904100000,
+        904300000,
+        904500000,
+        904700000,
+        904900000,
+        905100000,
+        905300000,
+      ]
+
+      [backend.basic_station.concentrators.lora_std]
+      frequency=904600000
+      bandwidth=500000
+      spreading_factor=8
