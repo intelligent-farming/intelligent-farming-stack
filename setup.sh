@@ -77,6 +77,39 @@ else
   log "Using existing .env."
 fi
 
+# ── Gateway Bridge host (for physical gateways) ──────────────────────────────
+# A physical gateway forwards LoRaWAN packets to the Gateway Bridge at the HOST's
+# LAN IP (a gateway can't reach `localhost`, and a bridged container can't see
+# the host's LAN IP). We detect it HERE — on the host, where it's actually
+# visible — and pass it to the provisioner, which writes `gatewayBridgeHost` into
+# Leftenant's config.json so the Add-Gateway wizard defaults to it. An explicit
+# LEFTENANT_GATEWAY_BRIDGE_HOST in .env wins.
+detect_host_ip() {
+  _ip=""
+  if command -v ip >/dev/null 2>&1; then
+    _ip=$(ip -4 route get 1.1.1.1 2>/dev/null \
+      | awk '{ for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit } }')
+  fi
+  if [ -z "$_ip" ] && command -v ipconfig >/dev/null 2>&1; then   # macOS
+    _if=$(route -n get default 2>/dev/null | awk '/interface:/{ print $2 }')
+    [ -n "$_if" ] && _ip=$(ipconfig getifaddr "$_if" 2>/dev/null)
+    [ -z "$_ip" ] && _ip=$(ipconfig getifaddr en0 2>/dev/null)
+  fi
+  if [ -z "$_ip" ] && command -v hostname >/dev/null 2>&1; then    # Linux fallback
+    _ip=$(hostname -I 2>/dev/null | awk '{ print $1 }')
+  fi
+  printf '%s' "$_ip"
+}
+
+LEFTENANT_GATEWAY_BRIDGE_HOST=$(env_val LEFTENANT_GATEWAY_BRIDGE_HOST "")
+[ -z "$LEFTENANT_GATEWAY_BRIDGE_HOST" ] && LEFTENANT_GATEWAY_BRIDGE_HOST=$(detect_host_ip)
+if [ -n "$LEFTENANT_GATEWAY_BRIDGE_HOST" ]; then
+  export LEFTENANT_GATEWAY_BRIDGE_HOST
+  log "Gateway Bridge host for gateways: $LEFTENANT_GATEWAY_BRIDGE_HOST"
+else
+  warn "Could not detect the host LAN IP — gateways will fall back to the ChirpStack URL host. Set LEFTENANT_GATEWAY_BRIDGE_HOST in .env to override."
+fi
+
 # ── Leftenant image ────────────────────────────────────────────────────────
 # Built from the public repo with `docker build <giturl>` (the buildx CLI clones
 # the repo server-side), NOT compose's build.context — compose mis-resolves a

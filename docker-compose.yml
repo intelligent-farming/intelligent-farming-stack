@@ -155,6 +155,10 @@ services:
       # (and LEFTENANT_ORIGIN above) when the bench is reached by LAN IP.
       LEFTENANT_CHIRPSTACK_URL: ${LEFTENANT_CHIRPSTACK_URL:-http://localhost:8090}
       LEFTENANT_MQTT_URL: ${LEFTENANT_MQTT_URL:-ws://localhost:9001}
+      # Host a physical gateway forwards to (Gateway Bridge, published at :1700 /
+      # :3001). setup.sh auto-detects the host LAN IP into this; if unset the
+      # provisioner falls back to the LEFTENANT_CHIRPSTACK_URL host.
+      LEFTENANT_GATEWAY_BRIDGE_HOST: ${LEFTENANT_GATEWAY_BRIDGE_HOST:-}
     volumes:
       - shared:/shared
       # Best-effort codec attach: if codec .js files are present at CODECS_DIR,

@@ -27,6 +27,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import grpc
 from chirpstack_api import api
@@ -45,6 +46,21 @@ REST_URL_INTERNAL = os.environ.get("CHIRPSTACK_REST_URL", "http://chirpstack-res
 # the compose network, reaches ChirpStack). Override for non-localhost hosts.
 PUBLIC_CHIRPSTACK_URL = os.environ.get("LEFTENANT_CHIRPSTACK_URL", "http://localhost:8090")
 PUBLIC_MQTT_URL = os.environ.get("LEFTENANT_MQTT_URL", "ws://localhost:9001")
+
+
+def _default_bridge_host():
+    """Host a physical gateway forwards LoRaWAN packets to (ChirpStack Gateway
+    Bridge, published on the host at :1700 / :3001). A gateway can never reach
+    `localhost`, so this must be the bench's LAN IP. Prefer an explicit override
+    (setup.sh auto-detects the host IP into it); otherwise reuse the host from the
+    browser-facing ChirpStack URL, which the operator already sets for LAN access."""
+    override = os.environ.get("LEFTENANT_GATEWAY_BRIDGE_HOST", "").strip()
+    if override:
+        return override
+    return urlparse(PUBLIC_CHIRPSTACK_URL).hostname or ""
+
+
+PUBLIC_GATEWAY_BRIDGE_HOST = _default_bridge_host()
 
 SHARED_DIR = Path(os.environ.get("SHARED_DIR", "/shared"))
 CODECS_DIR = Path(os.environ.get("CODECS_DIR", "/codecs"))
@@ -126,6 +142,8 @@ def write_artifacts(tenant_id, token):
         "mqttUrl": PUBLIC_MQTT_URL,
         "tenantId": tenant_id,
     }
+    if PUBLIC_GATEWAY_BRIDGE_HOST:
+        config["gatewayBridgeHost"] = PUBLIC_GATEWAY_BRIDGE_HOST
     (SHARED_DIR / "config.json").write_text(json.dumps(config, indent=2) + "\n")
 
     (SHARED_DIR / "leftenant.env").write_text(
@@ -133,6 +151,7 @@ def write_artifacts(tenant_id, token):
         f"LEFTENANT_API_KEY={token}\n"
         f"LEFTENANT_MQTT_URL={PUBLIC_MQTT_URL}\n"
         f"LEFTENANT_TENANT_ID={tenant_id}\n"
+        f"LEFTENANT_GATEWAY_BRIDGE_HOST={PUBLIC_GATEWAY_BRIDGE_HOST}\n"
     )
 
     # Format consumed by intelligent-farming-hub/codecs/attach-codecs.py
