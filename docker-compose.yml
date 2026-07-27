@@ -277,6 +277,36 @@ services:
       events-schema-wait:
         condition: service_completed_successfully
 
+  # ── Mock sensors (demo data generator; opt-in via the `mock` profile) ─────────
+  # Simulates a handful of real ag sensors: builds valid LoRaWAN uplinks (MIC +
+  # encrypted payload) and pushes them to the gateway bridge over Semtech UDP,
+  # exactly like a real gateway — so mocked readings flow through ChirpStack's
+  # decode into event_up and the MQTT app stream. Never runs by default; start it
+  # with `docker compose --profile mock up -d mock-sensors`. It reads the tenant
+  # API key from the shared volume (like Leftenant) and provisions its own
+  # gateway/app/profiles/devices (idempotent) before emitting.
+  mock-sensors:
+    build: ./mock-sensors
+    profiles: ["mock"]
+    restart: unless-stopped
+    environment:
+      CHIRPSTACK_REST_URL: http://chirpstack-rest-api:8090
+      GATEWAY_BRIDGE_UDP_HOST: chirpstack-gateway-bridge
+      GATEWAY_BRIDGE_UDP_PORT: "1700"
+      REGION: ${REGION:-us915_0}
+      MOCK_INTERVAL_SECONDS: ${MOCK_INTERVAL_SECONDS:-15}
+      MOCK_GATEWAY_EUI: ${MOCK_GATEWAY_EUI:-da7a9a7e00000001}
+    volumes:
+      - shared:/shared:ro   # reads /shared/config.json (tenant API key + id)
+    command: ["run"]
+    depends_on:
+      provisioner:
+        condition: service_completed_successfully
+      chirpstack:
+        condition: service_started
+      chirpstack-gateway-bridge:
+        condition: service_started
+
 volumes:
   chirpstack-pgdata:
   redisdata:

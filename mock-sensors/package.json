@@ -1,0 +1,42 @@
+{
+  "name": "@intelligent-farming/mock-sensors",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mock LoRaWAN ag sensors that inject valid uplinks into the intelligent-farming-stack bench, for demos and end-to-end tests.",
+  "license": "AGPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/intelligent-farming/intelligent-farming-stack.git"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "provision": "tsx src/cli.ts provision",
+    "run": "tsx src/cli.ts run",
+    "test:e2e": "vitest run",
+    "stack:up": "docker compose -f ../docker-compose.yml --profile mock up -d --build chirpstack-postgres redis mosquitto events-postgres chirpstack chirpstack-rest-api chirpstack-gateway-bridge events-api mock-sensors",
+    "stack:down": "docker compose -f ../docker-compose.yml --profile mock down",
+    "stack:reset": "docker compose -f ../docker-compose.yml --profile mock down -v",
+    "stack:ps": "docker compose -f ../docker-compose.yml --profile mock ps -a",
+    "mock:up": "docker compose -f ../docker-compose.yml --profile mock up -d --build mock-sensors",
+    "mock:stop": "docker compose -f ../docker-compose.yml stop mock-sensors",
+    "mock:logs": "docker compose -f ../docker-compose.yml logs -f mock-sensors",
+    "watch:mqtt": "docker compose -f ../docker-compose.yml exec mosquitto mosquitto_sub -t 'application/+/device/+/event/up' -v",
+    "watch:db": "docker compose -f ../docker-compose.yml exec events-postgres psql -U events -d chirpstack_events -c 'select time, dev_eui, f_port, object from event_up order by time desc limit 20;'",
+    "watch:db:count": "docker compose -f ../docker-compose.yml exec events-postgres psql -U events -d chirpstack_events -c 'select count(*) as event_up_rows from event_up;'",
+    "watch:graphql": "curl -s http://localhost:5050/graphql -H 'Content-Type: application/json' --data '{\"query\":\"{ allEventUps(orderBy: TIME_DESC, first: 10){ nodes { devEui deviceName fPort object } } }\"}'"
+  },
+  "dependencies": {
+    "@intelligent-farming/lorawan-codec-normalization": "^0.1.3",
+    "lora-packet": "^0.9.3",
+    "mqtt": "^5.5.0",
+    "pg": "^8.11.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/pg": "^8.11.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  }
+}

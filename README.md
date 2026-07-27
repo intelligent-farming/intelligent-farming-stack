@@ -284,6 +284,37 @@ docker compose exec mosquitto mosquitto_sub -t "+/gateway/#" -v   # frames on th
 If the bridge log shows the gateway but ChirpStack still reads "never seen", the registered Gateway
 EUI doesn't match what the gateway reports.
 
+## Mock data (demo & end-to-end tests)
+
+No gateway or sensors? The bundled [`mock-sensors`](./mock-sensors) harness simulates a handful of
+real ag sensors (Dragino, Milesight, Decentlab — soil, leaf-wetness and weather) and injects **valid**
+LoRaWAN uplinks (correct MIC + encrypted payload) via the Semtech UDP gateway bridge, exactly like a
+real packet-forwarder gateway. The mocked readings therefore flow through the whole pipeline — gateway
+bridge → ChirpStack decode → `event_up` (Postgres) **and** the MQTT application stream — so you can see
+the stack working end-to-end. It provisions its own gateway/application/device-profiles/devices
+(idempotent) and attaches each sensor's normalized codec to its profile, so decoded values show up
+regardless of the optional [`CODECS_DIR`](#codecs-optional) attach path below.
+
+Run the continuous demo generator (stack already up):
+
+```sh
+docker compose --profile mock up -d mock-sensors     # opt-in; never runs by default
+docker compose logs -f mock-sensors
+```
+
+Watch it populate GraphiQL (http://localhost:5050/graphiql), the ChirpStack UI, or Leftenant. Tune the
+cadence with `MOCK_INTERVAL_SECONDS` (default 15). Stop it with `docker compose stop mock-sensors`.
+
+Run the end-to-end test (boots the stack if needed, then tears down only what it started):
+
+```sh
+bash scripts/e2e.sh
+```
+
+It provisions the mock devices, sends one known payload per sensor, and asserts the decoded `object`
+lands on MQTT **and** in `event_up`. See [`mock-sensors/README.md`](./mock-sensors/README.md) for
+standalone usage and configuration.
+
 ## Codecs (optional)
 
 If codec `.js` files are present at `CODECS_DIR` (default `./codecs`), the provisioner runs
