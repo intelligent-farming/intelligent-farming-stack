@@ -9,7 +9,10 @@ FROM node:20-alpine
 WORKDIR /app
 
 # Install deps first for layer caching. No lockfile is committed, so use install.
+# `vendor/` carries the locally-built codec package tarball the dependency points
+# at; build it with `npm pack` from the codec repo (see mock-sensors/README.md).
 COPY package.json ./
+COPY vendor ./vendor
 RUN npm install --no-audit --no-fund
 
 # Build the CLI.

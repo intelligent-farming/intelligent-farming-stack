@@ -17,8 +17,8 @@
 
 import { codecScript } from '@intelligent-farming/lorawan-codec-normalization';
 // `vectors` is a public registry function but isn't re-exported from the package
-// root in 0.1.3; the dist/ module (and the codecs/ it reads) both ship in the
-// npm tarball, so importing it from the subpath is safe.
+// root (still true in 0.2.0); the dist/ module (and the codecs/ it reads) both
+// ship in the npm tarball, so importing it from the subpath is safe.
 import { vectors as codecVectors } from '@intelligent-farming/lorawan-codec-normalization/dist/registry';
 
 export interface MockSensor {
@@ -68,6 +68,10 @@ const CATALOG: Omit<MockSensor, 'devEui' | 'devAddr' | 'nwkSKey' | 'appSKey'>[] 
   { id: 'decentlab-dl-trs12', vendor: 'decentlab', device: 'dl-trs12', category: 'soil-monitor', index: 3 },
   { id: 'dragino-llms01', vendor: 'dragino', device: 'llms01', category: 'leaf-wetness', index: 4 },
   { id: 'decentlab-dl-atm41', vendor: 'decentlab', device: 'dl-atm41', category: 'weather-station', index: 5 },
+  // Multilayer probe: its vectors decode to the reserved `channels[]` array (one
+  // entry per depth), which exercises a nested array through ChirpStack's
+  // protobuf Struct conversion and the PostgreSQL integration.
+  { id: 'decentlab-dl-smtp', vendor: 'decentlab', device: 'dl-smtp', category: 'soil-monitor', index: 6 },
 ];
 
 export const SENSORS: MockSensor[] = CATALOG.map((c) => ({ ...c, ...creds(c.index) }));

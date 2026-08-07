@@ -17,20 +17,44 @@ in both sinks.
 
 ## The mocked sensors
 
-Five sensors spanning three payload wire-formats, each backed by a real normalized
+Six sensors spanning three payload wire-formats, each backed by a real normalized
 codec from [`@intelligent-farming/lorawan-codec-normalization`](https://github.com/intelligent-farming/lorawan-codec-normalization):
 
-| Sensor | Category | fPort |
-|--------|----------|-------|
-| `dragino/lse01` | soil-monitor | 2 |
-| `milesight-iot/em500-smtc` | soil-monitor | 85 |
-| `decentlab/dl-trs12` | soil-monitor | 1 |
-| `dragino/llms01` | leaf-wetness | 2 |
-| `decentlab/dl-atm41` | weather-station | 1 |
+| Sensor | Category | fPort | Notes |
+|--------|----------|-------|-------|
+| `dragino/lse01` | soil-monitor | 2 | |
+| `milesight-iot/em500-smtc` | soil-monitor | 85 | |
+| `decentlab/dl-trs12` | soil-monitor | 1 | |
+| `dragino/llms01` | leaf-wetness | 2 | |
+| `decentlab/dl-atm41` | weather-station | 1 | |
+| `decentlab/dl-smtp` | soil-monitor | 1 | multilayer probe — emits `channels[]` |
+
+`decentlab/dl-smtp` is an 8-depth soil moisture/temperature profile probe. Its
+readings decode into the reserved **`channels[]`** array (one measurement object per
+depth, each with a `channel` label), so it is the fleet's coverage for nested arrays
+surviving ChirpStack's protobuf `Struct` conversion and the PostgreSQL integration.
+Its three data vectors cover a full 8-depth profile, a partial probe with
+disconnected depths, and a battery-only uplink that carries no `channels` key at all.
 
 The raw payloads and expected decoded values are the codecs' own decode-verified
 test vectors (pulled from the package at runtime), so the mocked data is guaranteed
 to decode and the tests compare against the codec's authored output.
+
+### Local codec tarball (temporary)
+
+`channels[]` ships in `lorawan-codec-normalization` **0.2.0**, which is not yet on
+npm, so the dependency currently points at a locally-built tarball under `vendor/`
+(git-ignored) rather than a published range. Regenerate it from a checkout of the
+codec repo whenever the codec changes:
+
+```sh
+cd ../../lorawan-codec-normalization   # on the branch carrying 0.2.0
+npm run build
+npm pack --pack-destination ../intelligent-farming-stack/mock-sensors/vendor/
+```
+
+Then `npm install` here (or rebuild the image). Once 0.2.0 is published, drop
+`vendor/` and set the dependency back to a `^0.2.0` range.
 
 ## How it works
 
@@ -120,7 +144,7 @@ asserts the decoded `object` shows up on MQTT **and** in `event_up`.
 | `CHIRPSTACK_TENANT_ID` | (from `/shared/config.json`) | tenant UUID |
 | `GATEWAY_BRIDGE_UDP_HOST` / `_PORT` | `localhost` / `1700` | Semtech UDP target |
 | `REGION` | `us915_0` | sub-band → uplink RF params |
-| `MOCK_GATEWAY_EUI` | `f000000000000001` | gateway EUI the mock publishes under |
+| `MOCK_GATEWAY_EUI` | `da7a9a7e00000001` | gateway EUI the mock publishes under |
 | `MOCK_MQTT_URL` | `mqtt://localhost:1883` | broker for the e2e MQTT assertions |
 | `MOCK_EVENTS_PG_URL` | `postgres://events:changeme@localhost:5434/chirpstack_events` | event store for the e2e assertions |
 | `MOCK_INTERVAL_SECONDS` | `15` | demo-loop cadence |

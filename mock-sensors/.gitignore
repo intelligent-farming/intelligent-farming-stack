@@ -1,3 +1,7 @@
 node_modules/
 dist/
 package-lock.json
+
+# Locally-built codec package tarball (see README "Local codec tarball").
+# Temporary until lorawan-codec-normalization 0.2.0 is published to npm.
+vendor/*.tgz

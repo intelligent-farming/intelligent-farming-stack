@@ -287,7 +287,8 @@ EUI doesn't match what the gateway reports.
 ## Mock data (demo & end-to-end tests)
 
 No gateway or sensors? The bundled [`mock-sensors`](./mock-sensors) harness simulates a handful of
-real ag sensors (Dragino, Milesight, Decentlab — soil, leaf-wetness and weather) and injects **valid**
+real ag sensors (Dragino, Milesight, Decentlab — soil, leaf-wetness, weather, and a multilayer soil
+profile probe) and injects **valid**
 LoRaWAN uplinks (correct MIC + encrypted payload) via the Semtech UDP gateway bridge, exactly like a
 real packet-forwarder gateway. The mocked readings therefore flow through the whole pipeline — gateway
 bridge → ChirpStack decode → `event_up` (Postgres) **and** the MQTT application stream — so you can see
