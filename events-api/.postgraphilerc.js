@@ -8,7 +8,13 @@
 // (event_up, event_join, event_ack, event_tx_ack, event_status, event_location,
 // event_log, event_integration) — as a GraphQL endpoint, so apps and dashboards
 // query events without touching Postgres directly. It does NOT ingest anything;
-// ChirpStack remains the sole writer.
+// ChirpStack remains the sole writer of public.
+//
+// It also exposes the `leadsman` schema: the rule engine's `alert` / `run` tables and
+// its `open_alert` view. That makes "what is currently wrong with the fleet" a single
+// cheap GraphQL query instead of an agent scanning raw telemetry — which is the whole
+// point of running deterministic checks. Leadsman is the sole writer there; this role
+// only has SELECT, granted by leadsman's own migration 001.
 //
 // The connection string comes from DATABASE_URL (env) rather than a CLI flag so
 // the credentials never show up in the container's process args. It points at the
@@ -18,7 +24,14 @@
 module.exports = {
   options: {
     connection: process.env.DATABASE_URL,
-    schema: ['public'],
+    // PostGraphile refuses to start on a schema that does not exist, so compose orders
+    // this service after leadsman-migrate has created `leadsman`. If you remove the
+    // Leadsman services entirely, set API_SCHEMAS=public in .env so this does not go
+    // looking for a schema nothing creates.
+    schema: (process.env.API_SCHEMAS || 'public,leadsman')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
     host: '0.0.0.0', // inside the container; what's published is set by EVENTS_API_HOST_BIND
     port: 5000,
 

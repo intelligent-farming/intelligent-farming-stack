@@ -98,6 +98,16 @@ if (-not (Test-Path .env)) {
     Write-Log "Using existing .env."
 }
 
+# ── leadsman config ──────────────────────────────────────────────────────────
+# Same idiom as .env: the example is tracked, the live copy is git-ignored. Which
+# checks are enabled is a per-deployment decision, so an update must never clobber it.
+if (-not (Test-Path leadsman/leadsman.json)) {
+    Write-Log "Creating leadsman/leadsman.json from the example (8 fleet-health checks enabled)."
+    Copy-Item leadsman/leadsman.example.json leadsman/leadsman.json
+} else {
+    Write-Log "Using existing leadsman/leadsman.json."
+}
+
 # ── build + up ───────────────────────────────────────────────────────────────
 # ── Leftenant image ──────────────────────────────────────────────────────────
 # Built from the public repo with `docker build <giturl>` (the buildx CLI clones
@@ -151,6 +161,42 @@ if ($provRc -ne "0") {
     Die "provisioning did not complete cleanly - see the logs above."
 }
 Write-Log "Provisioner completed successfully."
+
+# ── verify the leadsman schema migration succeeded ───────────────────────────
+# One-shot, like the provisioner: it creates the `leadsman` schema (and indexes the
+# event_* tables) before the engine and events-api start. Worth reporting explicitly,
+# because events-api will not boot without that schema - so a silent failure here looks
+# like a GraphQL problem rather than a migration one.
+$lmId = (docker compose ps -aq leadsman-migrate | Select-Object -Last 1)
+if ($lmId) {
+    $lmRc = (docker inspect -f '{{.State.ExitCode}}' $lmId)
+    if ($lmRc -ne "0") {
+        Write-Warn "leadsman-migrate exit code = $lmRc. Recent logs:"
+        docker compose logs --tail 20 leadsman-migrate
+        Write-Warn "the alert schema was not created - leadsman and events-api will not start."
+    } else {
+        Write-Log "Leadsman schema migration completed successfully."
+    }
+}
+
+# ── leadsman engine role ─────────────────────────────────────────────────────
+# Normally created by events-initdb/020_leadsman_role.sh, but initdb only runs on a
+# FRESH volume - so a stack that predates Leadsman would come up with the engine in a
+# crash loop against a role that does not exist. The script is idempotent (it checks
+# pg_roles first), so run it every time and the upgrade needs no manual step.
+$pgId = (docker compose ps -q events-postgres | Select-Object -Last 1)
+if ($pgId) {
+    docker compose exec -T events-postgres bash /docker-entrypoint-initdb.d/020_leadsman_role.sh *> $null
+    if ($LASTEXITCODE -eq 0) {
+        # If the engine was already crash-looping on a missing role, it needs a nudge to
+        # pick up working credentials rather than waiting out its restart backoff.
+        docker compose restart leadsman *> $null
+        Write-Log "Leadsman engine role verified."
+    } else {
+        Write-Warn "could not verify the Leadsman engine role. Run it by hand to see why:"
+        Write-Warn "  docker compose exec events-postgres bash /docker-entrypoint-initdb.d/020_leadsman_role.sh"
+    }
+}
 
 # ── report ───────────────────────────────────────────────────────────────────
 $leftPort  = Get-EnvVal 'LEFTENANT_HOST_PORT' '4173'

@@ -11,6 +11,11 @@ auto-creating its `event_*` tables on first boot. **`events-api`** (PostGraphile
 GraphQL/GraphiQL endpoint over them. There is no separate collector, and nothing here depends on the
 `intelligent-farming-hub` repo.
 
+**`leadsman`** watches that store on a cron and raises alerts — dead devices, flat batteries, codecs
+that stopped decoding, thresholds you set. It is plain SQL, so monitoring the whole fleet costs
+nothing per reading, and the alerts it produces are what an agent or notifier consumes instead of raw
+telemetry. See [Alerting](#alerting-leadsman).
+
 **Get started:** one command [installs & runs](#install--run) the whole stack (no Git, no config),
 one command [updates](#updating) it, and the [command reference](#command-reference) covers day-to-day
 operations. Jump to [Prerequisites](#prerequisites) first.
@@ -121,6 +126,19 @@ they also build/refresh the Leftenant image, which Compose does not (see the not
 | Stop, keep data | `./setup.sh --down` · `.\setup.ps1 -Down` | `docker compose down` |
 | Stop, wipe data | `./setup.sh --reset` · `.\setup.ps1 -Reset` | `docker compose down -v` |
 | Follow logs | — | `docker compose logs -f` |
+| List available alert checks | — | `docker compose run --rm leadsman list` |
+| Validate the alert config | — | `docker compose run --rm leadsman verify` |
+| Run checks now, write nothing | — | `docker compose run --rm leadsman run --dry-run` |
+| Apply an edited alert config | — | `docker compose restart leadsman` |
+
+> **Two files the scripts create for you.** `.env` (from `.env.example`) and
+> `leadsman/leadsman.json` (from `leadsman/leadsman.example.json`). Both are git-ignored, so your
+> settings and your choice of alert checks survive an update. If you run raw `docker compose`, create
+> them first — `leadsman` exits with a config error if its file is missing:
+> ```sh
+> cp .env.example .env
+> cp leadsman/leadsman.example.json leadsman/leadsman.json
+> ```
 
 > **Leftenant image.** Leftenant has no `build:` section in compose — its image is built from the
 > public repo with the buildx CLI (compose's git-URL build context is broken on Windows). The helper
@@ -158,8 +176,14 @@ gateway --(Semtech UDP :1700)--> gateway-bridge --> mosquitto(:1883) --> chirpst
    PostgreSQL integration (durable store) ───────┐        MQTT integration ──┘
                                                   v                          v
                               events-postgres <--(writes event_* rows)   mosquitto
-                                     |                                        |
-                        events-api (PostGraphile, GraphQL :5050)     (Leftenant join monitor, ws :9001)
+                                   |    ^                                     |
+                                   |    └──(writes leadsman.alert)── leadsman  |
+                                   |                                     |    |
+                                   |                     (POST per new alert) |
+                                   |                                     v    |
+                        events-api (PostGraphile, GraphQL :5050)   notify.webhookUrl
+                                   |                               (Hermes / Twilio /
+                       reads public.event_* AND leadsman.open_alert  your own sender)
 
 Leftenant (browser :4173) --(REST :8090, CORS)--> chirpstack-rest-api --> chirpstack
 ```
@@ -180,6 +204,7 @@ adds the PostgreSQL integration, which is the durable store `events-api` reads f
 | 3001 | chirpstack-gateway-bridge-basicstation | BasicStation gateways (LNS WebSocket) |
 | 5050 | events-api | GraphQL (loopback by default; 5000 avoided — macOS AirPlay) |
 | 5434 | events-postgres | host-side psql/export; loopback by default — `EVENTS_POSTGRES_HOST_BIND` to expose (see below) |
+| — | leadsman | publishes **no** port. It only talks to `events-postgres`; alerts are read via `events-api` or POSTed outbound |
 
 ## Device event store & GraphQL
 
@@ -217,12 +242,144 @@ read-only by construction and enforced at the DB.
 
 ChirpStack's `event_*` tables ship only a primary-key index, so `events-api` runs with
 `ignoreIndexes: true` — that's what makes `orderBy: TIME_DESC` and `condition: { devEui: … }`
-available on every column. At bench volumes the unindexed scans are fine; add indexes on
-`event_up (time)` / `event_up (dev_eui)` (etc.) before relying on those filters at scale.
+available on every column. `leadsman-migrate` adds the indexes those filters actually need
+(`event_up (time)`, `event_up (dev_eui, time)`, and the same on `event_join` / `event_status`) as part
+of the default boot, so this is no longer only safe at bench volumes — see
+`LEADSMAN_APPLY_EVENT_INDEXES` if you'd rather leave ChirpStack's tables untouched.
 
 > First boot ordering is handled for you: a one-shot `events-schema-wait` blocks `events-api` until
 > ChirpStack has created `event_up`, so the GraphQL schema is populated on the first `up` (no manual
 > restart). Send one device uplink (or trigger a join) to see rows.
+
+## Alerting (Leadsman)
+
+`leadsman` is a scheduled rule engine over the same event store. Every 15 minutes it runs the checks
+you enabled, and maintains alerts in a `leadsman` schema in the same database. It is the piece that
+turns "we are recording telemetry" into "we are told when something is wrong".
+
+Two things make it worth running by default:
+
+- **It costs nothing per reading.** The checks are SQL. Watching a hundred devices for the rest of the
+  season is the same handful of queries every 15 minutes, whether or not anything is wrong.
+- **It catches silence.** A device that stops transmitting emits no event to react to. Only something
+  that periodically asks "who hasn't reported?" finds it — `device-silent` is the check no purely
+  event-driven pipeline can replace.
+
+### What runs by default
+
+Eight fleet-health checks, out of a menu of 55. These need no crop-specific tuning, and they cover the
+failures that otherwise make every other check silently blind:
+
+| Check | Catches |
+|-------|---------|
+| `device-silent` | a device that stopped reporting altogether |
+| `battery-low` | decoded battery / supply voltage below threshold, with hysteresis |
+| `decode-failure` | uplinks arriving but the codec producing nothing — including a JSON `null` payload |
+| `soil-moisture-missing` | a field that used to decode and silently vanished (usually a codec or profile change) |
+| `device-log-error` | ChirpStack's own device-level error events |
+| `status-battery-low` | MAC-layer battery percentage from `DevStatusAns` — works with no codec at all |
+| `status-margin-low` | demodulation margin collapsing, i.e. a link about to fail |
+| `join-churn` | a device re-joining repeatedly instead of holding its session |
+
+The remaining 47 are thresholds over the normalized codec vocabulary — wind speed, air and soil
+temperature, leaf wetness, tank level, CO₂, pressure, rainfall rate, geofence breach, and so on. They
+ship **disabled**, because a sensible threshold depends on your crop, region, and equipment, and
+enabling everything at once produces noise rather than signal.
+
+### Choosing checks
+
+Everything is in **`leadsman/leadsman.json`**, mounted read-only into the container. The setup
+scripts create it from `leadsman.example.json` on first run and it is **git-ignored** — the same
+arrangement as `.env`, so your check selection is not clobbered when you update the repo. Flip
+`"enabled": true` on the entries you want, then:
+
+```sh
+docker compose run --rm leadsman verify     # parse the config, confirm each check's tables/columns exist
+docker compose restart leadsman
+```
+
+`verify` is worth running before the restart: it catches a typo'd path or a check whose table is
+missing *now*, rather than at 3am in a sounding. To see every available check and its parameters:
+
+```sh
+docker compose run --rm leadsman list
+docker compose run --rm leadsman run --dry-run    # run every enabled check, write nothing
+```
+
+The same check can be enabled more than once with different parameters — give each instance its own
+`"as"` name (that name is the alert `kind`, so they don't collide).
+
+### Reading alerts
+
+The `leadsman` schema is exposed over the **same read-only GraphQL endpoint** as the telemetry, so
+there are no new credentials and no new port:
+
+```graphql
+# everything currently wrong with the fleet
+{
+  allOpenAlerts(orderBy: RAISED_AT_DESC) {
+    nodes { devEui deviceName kind severity summary raisedAt detail }
+  }
+}
+```
+
+`open_alert` is a view of alerts with no `resolved_at`. Alerts have a lifecycle rather than being
+fire-and-forget: a check that keeps matching **holds the existing alert open** instead of raising a
+duplicate, and the alert resolves when the condition clears. A flapping sensor produces one alert, not
+ninety-six a day. (A check that *errors* resolves nothing — failure to look is not evidence of health.)
+
+Or straight from Postgres:
+
+```sh
+docker compose exec events-postgres \
+  psql -U events -d chirpstack_events -c 'SELECT * FROM leadsman.open_alert ORDER BY raised_at DESC'
+```
+
+### Getting alerts delivered
+
+Leadsman does not send SMS. It POSTs each **newly raised** alert once to `notify.webhookUrl`, and
+stamps it delivered on success; a failed POST leaves it pending so a later sounding retries. That seam
+is where a notifier goes — your own Twilio sender, or a **Hermes** webhook route.
+
+Hermes is deployed separately from this stack. Wiring it up is three lines in `.env` — the receiver's
+address belongs with every other address, not in the file you edit to choose checks:
+
+```sh
+# .env
+LEADSMAN_WEBHOOK_URL=http://host.docker.internal:8644/webhook/leadsman
+LEADSMAN_WEBHOOK_AUTH=hmac
+LEADSMAN_WEBHOOK_TOKEN=<the same secret the Hermes route expects>
+
+docker compose up -d leadsman
+```
+
+These override whatever `notify` says in `leadsman.json`, and a blank `LEADSMAN_WEBHOOK_URL` counts as
+unset rather than as an empty URL. (Env override needs leadsman ≥ 0.1.1; on 0.1.0 set `notify.webhookUrl`
+in the config file instead.)
+
+`hmac` sends `X-Webhook-Signature-V2` (HMAC-SHA256 of `<unix-seconds>.<body>`) plus
+`X-Webhook-Timestamp`, which is what Hermes' generic webhook route verifies — the timestamp is inside
+the signed string, so a captured request can't be replayed. `host.docker.internal` reaches a Hermes
+running on the Docker host rather than inside this compose network. `token` and `bearer` modes are
+also supported for other receivers.
+
+For routine threshold alerts, point it at a Hermes route with **`deliver_only: true`** — that
+forwards to SMS without invoking the model, so alert volume costs no tokens. Reserve agent-invoking
+routes for the alerts that genuinely need interpretation. An agent that instead polls telemetry on a
+schedule spends tokens on every run whether or not anything is wrong, which is the cost this
+arrangement exists to avoid.
+
+### Privileges
+
+`leadsman` connects as its own role (`POSTGRES_LEADSMAN_USER`, created by
+`postgresql/events-initdb/020_leadsman_role.sh`): `SELECT` on `public`, `INSERT`/`UPDATE` on the
+`leadsman` schema. No DDL, no `DELETE`, nothing that can alter or destroy ChirpStack's data. Schema
+creation is a separate one-shot (`leadsman-migrate`) that runs as the owner role, so the long-running
+container never holds DDL rights.
+
+To run the stack **without** Leadsman, clear `POSTGRES_LEADSMAN_USER` / `POSTGRES_LEADSMAN_PASSWORD`,
+set `EVENTS_API_SCHEMAS=public`, and remove the `leadsman` / `leadsman-migrate` services along with
+`events-api`'s `depends_on` entry for the latter.
 
 ## Region / sub-band
 
@@ -404,5 +561,10 @@ Notes:
 ## Security posture
 
 Bench defaults only: anonymous MQTT, ChirpStack `admin`/`admin`, placeholder `CHIRPSTACK_API_SECRET`,
-loopback-bound event API/DB. Rotate the secret, add MQTT auth + TLS, and lock down origins/binds
-before exposing any of this beyond a trusted private network.
+placeholder Postgres passwords (`EVENTS_POSTGRES_PASSWORD`, `EVENTS_POSTGRES_API_PASSWORD`,
+`POSTGRES_LEADSMAN_PASSWORD`), loopback-bound event API/DB. Rotate the secrets, add MQTT auth + TLS,
+and lock down origins/binds before exposing any of this beyond a trusted private network.
+
+Note that alert bodies contain device names and measured values. If you point `notify.webhookUrl` at
+anything off-device, use `webhookAuth: "hmac"` and HTTPS — `token` and `bearer` modes put a
+bearer-equivalent secret on the wire with no replay protection.

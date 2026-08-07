@@ -214,6 +214,10 @@ services:
       # Read-only role PostGraphile connects as (created by initdb 010_events_roles.sh).
       POSTGRES_API_USER: ${EVENTS_POSTGRES_API_USER:-events_api}
       POSTGRES_API_PASSWORD: ${EVENTS_POSTGRES_API_PASSWORD:-changeme-api}
+      # Engine role Leadsman connects as (created by initdb 020_leadsman_role.sh):
+      # SELECT on public, INSERT/UPDATE on the leadsman schema. No DDL, no DELETE.
+      POSTGRES_LEADSMAN_USER: ${POSTGRES_LEADSMAN_USER:-leadsman}
+      POSTGRES_LEADSMAN_PASSWORD: ${POSTGRES_LEADSMAN_PASSWORD:-changeme-leadsman}
       # Opt-in read-only replication role for Fivetran; the same init script creates
       # it (+ publication) only when both are set (blank = disabled).
       POSTGRES_FIVETRAN_USER: ${EVENTS_POSTGRES_FIVETRAN_USER:-}
@@ -268,6 +272,9 @@ services:
       # they don't show up in the container's process list.
       DATABASE_URL: postgres://${EVENTS_POSTGRES_API_USER:-events_api}:${EVENTS_POSTGRES_API_PASSWORD:-changeme-api}@events-postgres:5432/${EVENTS_POSTGRES_DB:-chirpstack_events}
       API_GRAPHIQL: ${EVENTS_API_GRAPHIQL:-true}
+      # Schemas exposed over GraphQL. `leadsman` puts the rule engine's open alerts on
+      # the same endpoint as the telemetry. Set `public` alone if you remove Leadsman.
+      API_SCHEMAS: ${EVENTS_API_SCHEMAS:-public,leadsman}
     ports:
       # host 5050 by default: port 5000 is taken by the macOS AirPlay Receiver.
       - "${EVENTS_API_HOST_BIND:-127.0.0.1}:${EVENTS_API_HOST_PORT:-5050}:5000"
@@ -276,6 +283,78 @@ services:
         condition: service_healthy
       events-schema-wait:
         condition: service_completed_successfully
+      # PostGraphile will not start against a schema that does not exist yet, so the
+      # leadsman schema has to be created before this service boots. Drop this entry
+      # (and set EVENTS_API_SCHEMAS=public) if you remove the Leadsman services.
+      leadsman-migrate:
+        condition: service_completed_successfully
+
+  # ── Leadsman (scheduled rule engine over the event store) ─────────────────────
+  # Deterministic monitoring: reads the ChirpStack event_* tables on a cron and writes
+  # alerts to the `leadsman` schema in the same database. Zero LLM tokens — an agent
+  # (Hermes, or anything else) subscribes to the alerts rather than polling telemetry.
+  # Nothing is published to the host; the alert surface is reached over the existing
+  # read-only GraphQL at :5050, or by POST to notify.webhookUrl.
+
+  # One-shot: create the `leadsman` schema (and, by default, index the event_* tables)
+  # before the engine starts. Runs as the OWNER role — DDL is deliberately outside the
+  # engine role's rights, so the long-running container cannot alter any schema.
+  leadsman-migrate:
+    image: ${LEADSMAN_IMAGE:-ghcr.io/intelligent-farming/leadsman:0.1}
+    restart: "no"
+    command: ["migrate"]
+    environment:
+      LEADSMAN_MIGRATE_URL: postgres://${EVENTS_POSTGRES_USER:-events}:${EVENTS_POSTGRES_PASSWORD:-changeme}@events-postgres:5432/${EVENTS_POSTGRES_DB:-chirpstack_events}
+      # ChirpStack ships event_* with a primary-key index only, and every check filters
+      # by time and groups by dev_eui — unindexed, each sounding is a sequential scan,
+      # which is how a monitor starts degrading the thing it monitors. On by default
+      # because this stack owns events-postgres outright; the tables are empty on a
+      # fresh volume so the CREATE INDEXes are instant. Set false to skip them.
+      LEADSMAN_APPLY_EVENT_INDEXES: ${LEADSMAN_APPLY_EVENT_INDEXES:-true}
+      LEADSMAN_LOG_FORMAT: ${LEADSMAN_LOG_FORMAT:-text}
+    depends_on:
+      events-postgres:
+        condition: service_healthy
+      # The index migration touches event_up, so wait for ChirpStack to have created it.
+      events-schema-wait:
+        condition: service_completed_successfully
+
+  leadsman:
+    image: ${LEADSMAN_IMAGE:-ghcr.io/intelligent-farming/leadsman:0.1}
+    restart: unless-stopped
+    environment:
+      # Engine role: SELECT on public (read ChirpStack events), INSERT/UPDATE on the
+      # leadsman schema (write its own alerts). It cannot alter ChirpStack's data.
+      LEADSMAN_DATABASE_URL: postgres://${POSTGRES_LEADSMAN_USER:-leadsman}:${POSTGRES_LEADSMAN_PASSWORD:-changeme-leadsman}@events-postgres:5432/${EVENTS_POSTGRES_DB:-chirpstack_events}
+      LEADSMAN_CONFIG: /etc/leadsman/leadsman.json
+      LEADSMAN_LOG_LEVEL: ${LEADSMAN_LOG_LEVEL:-info}
+      LEADSMAN_LOG_FORMAT: ${LEADSMAN_LOG_FORMAT:-json}
+      # Delivery target. These override leadsman.json, so the receiver's address sits in
+      # .env with every other address instead of in the file you edit to pick checks.
+      # Blank counts as unset, so the default ships delivering nothing — alerts are
+      # still recorded and readable over GraphQL. Requires leadsman >= 0.1.1.
+      LEADSMAN_WEBHOOK_URL: ${LEADSMAN_WEBHOOK_URL:-}
+      LEADSMAN_WEBHOOK_AUTH: ${LEADSMAN_WEBHOOK_AUTH:-hmac}
+      LEADSMAN_WEBHOOK_TOKEN: ${LEADSMAN_WEBHOOK_TOKEN:-}
+    volumes:
+      # Read-only: the engine never writes its config. ./leadsman/leadsman.json is
+      # created from leadsman.example.json by the setup scripts and is git-ignored, so
+      # your check selection survives an update. Edit it and
+      # `docker compose restart leadsman` to change which checks run.
+      - ./leadsman:/etc/leadsman:ro
+    depends_on:
+      events-postgres:
+        condition: service_healthy
+      leadsman-migrate:
+        condition: service_completed_successfully
+    # Resource ceiling. On a 2-core edge device the engine must not crowd out
+    # ChirpStack's ingestion; soundings are not latency-critical. `deploy.resources`
+    # is honoured by `docker compose up` (non-swarm) as of Compose v2.
+    deploy:
+      resources:
+        limits:
+          cpus: "${LEADSMAN_CPUS:-0.50}"
+          memory: ${LEADSMAN_MEMORY:-256M}
 
 volumes:
   chirpstack-pgdata:
