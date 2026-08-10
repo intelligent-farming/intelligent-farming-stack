@@ -237,6 +237,14 @@ services:
       interval: 5s
       timeout: 5s
       retries: 12
+      # Without start_period, probe failures during startup count against `retries`, so the
+      # whole budget is 12 x 5s = 60s. That is fine for a first boot on a laptop, but this
+      # store grows and lives on slow edge hardware: after an unclean stop Postgres replays
+      # WAL before accepting connections, and on a 2-core box with a large data directory
+      # that can take longer than a minute. Exceeding it makes every dependent service abort
+      # with "container events-postgres is unhealthy" — which reads as a broken database
+      # rather than an impatient healthcheck. Probes during start_period do not count.
+      start_period: 120s
 
   # One-shot: block until ChirpStack has created its event_up table, so events-api
   # introspects a populated schema on first boot (matches the provisioner idiom).

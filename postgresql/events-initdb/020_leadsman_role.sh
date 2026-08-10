@@ -31,12 +31,22 @@
 # Blank/unset LEADSMAN vars disable this script, matching the Fivetran role's opt-in
 # behaviour — so clearing them in .env is how you run the stack without Leadsman.
 
-set -euo pipefail
+# Everything below runs in a SUBSHELL, deliberately.
+#
+# The postgres entrypoint executes a *.sh init file if it carries the executable bit and
+# SOURCES it if it does not. The bit is set in git, but a GitHub .zip download does not
+# preserve unix permissions, so on some machines this file arrives non-executable and gets
+# sourced. Sourced at top level, `set -euo pipefail` would leak into the entrypoint for the
+# rest of initdb, and an `exit` would abort initdb entirely — leaving Postgres stuck
+# mid-initialisation and permanently unhealthy rather than simply skipping this script.
+# A subshell contains both: `set -e` applies only in here, and `exit` ends only this block.
+(
+  set -euo pipefail
 
-if [ -z "${POSTGRES_LEADSMAN_USER:-}" ] || [ -z "${POSTGRES_LEADSMAN_PASSWORD:-}" ]; then
-  echo "020_leadsman_role: POSTGRES_LEADSMAN_USER / POSTGRES_LEADSMAN_PASSWORD not set — skipping"
-  exit 0
-fi
+  if [ -z "${POSTGRES_LEADSMAN_USER:-}" ] || [ -z "${POSTGRES_LEADSMAN_PASSWORD:-}" ]; then
+    echo "020_leadsman_role: POSTGRES_LEADSMAN_USER / POSTGRES_LEADSMAN_PASSWORD not set — skipping"
+    exit 0
+  fi
 
 role_exists="$(psql -tAc "SELECT 1 FROM pg_roles WHERE rolname = '${POSTGRES_LEADSMAN_USER}'" \
   -U "$POSTGRES_USER" -d "$POSTGRES_DB")"
@@ -69,7 +79,16 @@ GRANT USAGE ON SCHEMA leadsman TO "${POSTGRES_LEADSMAN_USER}";
 GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA leadsman TO "${POSTGRES_LEADSMAN_USER}";
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA leadsman TO "${POSTGRES_LEADSMAN_USER}";
 EOSQL
-  echo "020_leadsman_role: role '${POSTGRES_LEADSMAN_USER}' ready (read public / write leadsman)"
-else
-  echo "020_leadsman_role: role '${POSTGRES_LEADSMAN_USER}' ready (read public; leadsman schema not created yet — run migration 001)"
-fi
+    echo "020_leadsman_role: role '${POSTGRES_LEADSMAN_USER}' ready (read public / write leadsman)"
+  else
+    echo "020_leadsman_role: role '${POSTGRES_LEADSMAN_USER}' ready (read public; leadsman schema not created yet — run migration 001)"
+  fi
+) || {
+  # A failure here must NOT take initdb down with it. Without Leadsman's role the engine
+  # cannot connect — but ChirpStack, the event store, and events-api are all unaffected,
+  # and setup.sh re-runs this script on every start, so it self-heals once the cause is
+  # fixed. A half-initialised Postgres, by contrast, breaks the entire stack.
+  echo "020_leadsman_role: FAILED — Leadsman will not be able to connect." >&2
+  echo "020_leadsman_role: the rest of the stack is unaffected; re-run this script after fixing:" >&2
+  echo "020_leadsman_role:   docker compose exec events-postgres bash /docker-entrypoint-initdb.d/020_leadsman_role.sh" >&2
+}
