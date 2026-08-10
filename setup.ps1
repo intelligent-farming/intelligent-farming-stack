@@ -70,14 +70,37 @@ if ($Reset) {
     exit $LASTEXITCODE
 }
 
+# ── running a native command quietly ─────────────────────────────────────────
+# Windows PowerShell 5.1 wraps every line a native command writes to stderr in an
+# ErrorRecord *when that stream is redirected* - and $ErrorActionPreference='Stop' (set
+# above, and again by the one-line installer) promotes the first one to a terminating
+# error. The docker CLI writes ordinary progress there: "Container x Restarting" is
+# stderr, not a failure. So `docker compose restart x *> $null` aborts the script on a
+# command that SUCCEEDED, with a NativeCommandError that names the progress line.
+# PowerShell 7 changed this, so the bug only shows up on the 5.1 that ships with Windows -
+# which is exactly what `powershell -ExecutionPolicy Bypass -File .\setup.ps1` runs.
+#
+# Route native calls through this: it relaxes the preference for the duration, folds
+# stderr into the success stream so nothing is left to promote, discards both, and reports
+# success the only way a native command reliably can - its exit code.
+function Invoke-Quiet {
+    param([Parameter(Mandatory)][scriptblock]$Command)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $Command 2>&1 | Out-Null
+        return $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+}
+
 # ── prerequisites ────────────────────────────────────────────────────────────
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
     Die "docker is not installed or not on PATH."
 }
-docker compose version *> $null
-if ($LASTEXITCODE -ne 0) { Die "docker compose v2 is required (got none)." }
-docker info *> $null
-if ($LASTEXITCODE -ne 0) { Die "the Docker daemon is not running - start Docker Desktop and retry." }
+if ((Invoke-Quiet { docker compose version }) -ne 0) { Die "docker compose v2 is required (got none)." }
+if ((Invoke-Quiet { docker info }) -ne 0) { Die "the Docker daemon is not running - start Docker Desktop and retry." }
 
 # No sibling repos needed: Leftenant builds from its public git repo, everything
 # else uses published images or builds in-repo (events-api, provisioning).
@@ -186,11 +209,13 @@ if ($lmId) {
 # pg_roles first), so run it every time and the upgrade needs no manual step.
 $pgId = (docker compose ps -q events-postgres | Select-Object -Last 1)
 if ($pgId) {
-    docker compose exec -T events-postgres bash /docker-entrypoint-initdb.d/020_leadsman_role.sh *> $null
-    if ($LASTEXITCODE -eq 0) {
+    $roleRc = Invoke-Quiet { docker compose exec -T events-postgres bash /docker-entrypoint-initdb.d/020_leadsman_role.sh }
+    if ($roleRc -eq 0) {
         # If the engine was already crash-looping on a missing role, it needs a nudge to
-        # pick up working credentials rather than waiting out its restart backoff.
-        docker compose restart leadsman *> $null
+        # pick up working credentials rather than waiting out its restart backoff. This is
+        # the call that used to kill the script: `docker compose restart` prints
+        # "Container ... Restarting" to stderr even when it works.
+        Invoke-Quiet { docker compose restart leadsman } | Out-Null
         Write-Log "Leadsman engine role verified."
     } else {
         Write-Warn "could not verify the Leadsman engine role. Run it by hand to see why:"
