@@ -181,9 +181,9 @@ gateway --(Semtech UDP :1700)--> gateway-bridge --> mosquitto(:1883) --> chirpst
                                    |                                     |    |
                                    |                     (POST per new alert) |
                                    |                                     v    |
-                        events-api (PostGraphile, GraphQL :5050)   notify.webhookUrl
-                                   |                               (Hermes / Twilio /
-                       reads public.event_* AND leadsman.open_alert  your own sender)
+                        events-api (PostGraphile, GraphQL :5050)   notify.destinations
+                                   |                               (SMS / Telegram /
+                       reads public.event_* AND leadsman.open_alert  Signal / Hermes)
 
 Leftenant (browser :4173) --(REST :8090, CORS)--> chirpstack-rest-api --> chirpstack
 ```
@@ -337,25 +337,36 @@ docker compose exec events-postgres \
 
 ### Getting alerts delivered
 
-Leadsman does not send SMS. It POSTs each **newly raised** alert once to `notify.webhookUrl`, and
-stamps it delivered on success; a failed POST leaves it pending so a later sounding retries. That seam
-is where a notifier goes — your own Twilio sender, or a **Hermes** webhook route.
+Leadsman delivers each **newly raised** alert exactly once and stamps it delivered on success; a
+failure leaves it pending so a later sounding retries. A destination is either a messaging platform
+(`twilio`, `telegram`, `signal` — a one-line text to a phone) or a `webhook` (the alert JSON, signed),
+which is what a **Hermes** route wants.
 
-Hermes is deployed separately from this stack. Wiring it up is three lines in `.env` — the receiver's
-address belongs with every other address, not in the file you edit to choose checks:
+Hermes is deployed separately from this stack. Add a destination for it in
+`leadsman/leadsman.json`, then point it and its secret from `.env`:
+
+```jsonc
+// leadsman/leadsman.json
+"notify": {
+  "destinations": {
+    "agent": { "webhookUrl": "http://host.docker.internal:8644/hermes/agent", "webhookAuth": "hmac" }
+  },
+  "routing": { "situation": "agent" }
+}
+```
 
 ```sh
-# .env
-LEADSMAN_WEBHOOK_URL=http://host.docker.internal:8644/webhook/leadsman
-LEADSMAN_WEBHOOK_AUTH=hmac
+# .env — overrides the URL above, so the address lives with every other address
+LEADSMAN_DEST_AGENT_WEBHOOK_URL=http://host.docker.internal:8644/hermes/agent
 LEADSMAN_WEBHOOK_TOKEN=<the same secret the Hermes route expects>
 
 docker compose up -d leadsman
 ```
 
-These override whatever `notify` says in `leadsman.json`, and a blank `LEADSMAN_WEBHOOK_URL` counts as
-unset rather than as an empty URL. (Env override needs leadsman ≥ 0.1.1; on 0.1.0 set `notify.webhookUrl`
-in the config file instead.)
+Routing `situation` alone sends Hermes only the alerts that need interpreting; `fact` alerts
+stay recorded, or go to a Twilio/Telegram/Signal destination for a text message. `hmac` signs
+`<unix-seconds>.<body>` with HMAC-SHA256, which is replay-safe and what Hermes' generic
+webhook route verifies.
 
 `hmac` sends `X-Webhook-Signature-V2` (HMAC-SHA256 of `<unix-seconds>.<body>`) plus
 `X-Webhook-Timestamp`, which is what Hermes' generic webhook route verifies — the timestamp is inside
@@ -565,6 +576,7 @@ placeholder Postgres passwords (`EVENTS_POSTGRES_PASSWORD`, `EVENTS_POSTGRES_API
 `POSTGRES_LEADSMAN_PASSWORD`), loopback-bound event API/DB. Rotate the secrets, add MQTT auth + TLS,
 and lock down origins/binds before exposing any of this beyond a trusted private network.
 
-Note that alert bodies contain device names and measured values. If you point `notify.webhookUrl` at
-anything off-device, use `webhookAuth: "hmac"` and HTTPS — `token` and `bearer` modes put a
-bearer-equivalent secret on the wire with no replay protection.
+Note that alert bodies contain device names and measured values. If you point a webhook destination
+at anything off-device, use `"webhookAuth": "hmac"` and HTTPS — `token` and `bearer` put a
+bearer-equivalent secret on the wire with no replay protection. Messaging providers all use HTTPS and
+their own credentials.

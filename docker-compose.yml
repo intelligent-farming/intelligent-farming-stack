@@ -302,13 +302,13 @@ services:
   # alerts to the `leadsman` schema in the same database. Zero LLM tokens — an agent
   # (Hermes, or anything else) subscribes to the alerts rather than polling telemetry.
   # Nothing is published to the host; the alert surface is reached over the existing
-  # read-only GraphQL at :5050, or by POST to notify.webhookUrl.
+  # read-only GraphQL at :5050, or by delivery to notify.destinations.
 
   # One-shot: create the `leadsman` schema (and, by default, index the event_* tables)
   # before the engine starts. Runs as the OWNER role — DDL is deliberately outside the
   # engine role's rights, so the long-running container cannot alter any schema.
   leadsman-migrate:
-    image: ${LEADSMAN_IMAGE:-ghcr.io/intelligent-farming/leadsman:0.1}
+    image: ${LEADSMAN_IMAGE:-ghcr.io/intelligent-farming/leadsman:0.2}
     restart: "no"
     command: ["migrate"]
     environment:
@@ -328,7 +328,7 @@ services:
         condition: service_completed_successfully
 
   leadsman:
-    image: ${LEADSMAN_IMAGE:-ghcr.io/intelligent-farming/leadsman:0.1}
+    image: ${LEADSMAN_IMAGE:-ghcr.io/intelligent-farming/leadsman:0.2}
     restart: unless-stopped
     environment:
       # Engine role: SELECT on public (read ChirpStack events), INSERT/UPDATE on the
@@ -337,13 +337,21 @@ services:
       LEADSMAN_CONFIG: /etc/leadsman/leadsman.json
       LEADSMAN_LOG_LEVEL: ${LEADSMAN_LOG_LEVEL:-info}
       LEADSMAN_LOG_FORMAT: ${LEADSMAN_LOG_FORMAT:-json}
-      # Delivery target. These override leadsman.json, so the receiver's address sits in
-      # .env with every other address instead of in the file you edit to pick checks.
-      # Blank counts as unset, so the default ships delivering nothing — alerts are
-      # still recorded and readable over GraphQL. Requires leadsman >= 0.1.1.
-      LEADSMAN_WEBHOOK_URL: ${LEADSMAN_WEBHOOK_URL:-}
-      LEADSMAN_WEBHOOK_AUTH: ${LEADSMAN_WEBHOOK_AUTH:-hmac}
+      # Shared-secret fallback for webhook destinations that have no token of their own.
+      # Which destinations exist and where each points is set in leadsman.json; per-destination
+      # overrides are LEADSMAN_DEST_<NAME>_* — pass any you use through here.
       LEADSMAN_WEBHOOK_TOKEN: ${LEADSMAN_WEBHOOK_TOKEN:-}
+      LEADSMAN_DEST_AGENT_WEBHOOK_URL: ${LEADSMAN_DEST_AGENT_WEBHOOK_URL:-}
+      LEADSMAN_DEST_ONCALL_TO: ${LEADSMAN_DEST_ONCALL_TO:-}
+      # Outbound messaging credentials. Blank = that provider is
+      # unavailable; a destination configured to use it then fails config validation at
+      # startup rather than silently never delivering. See .env.example.
+      LEADSMAN_TWILIO_ACCOUNT_SID: ${LEADSMAN_TWILIO_ACCOUNT_SID:-}
+      LEADSMAN_TWILIO_AUTH_TOKEN: ${LEADSMAN_TWILIO_AUTH_TOKEN:-}
+      LEADSMAN_TWILIO_FROM: ${LEADSMAN_TWILIO_FROM:-}
+      LEADSMAN_TELEGRAM_BOT_TOKEN: ${LEADSMAN_TELEGRAM_BOT_TOKEN:-}
+      LEADSMAN_SIGNAL_BASE_URL: ${LEADSMAN_SIGNAL_BASE_URL:-}
+      LEADSMAN_SIGNAL_FROM: ${LEADSMAN_SIGNAL_FROM:-}
     volumes:
       # Read-only: the engine never writes its config. ./leadsman/leadsman.json is
       # created from leadsman.example.json by the setup scripts and is git-ignored, so
