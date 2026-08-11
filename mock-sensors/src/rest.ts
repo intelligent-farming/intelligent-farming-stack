@@ -36,6 +36,11 @@ async function request<T>(
       'Grpc-Metadata-Authorization': `Bearer ${cfg.apiKey}`,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
+    // Without a deadline a wedged ChirpStack (booted, listening, but not
+    // answering) hangs provisionAll forever with no output. 30s is far longer
+    // than any of these calls legitimately takes, so it only ever fires on a
+    // genuinely stuck server.
+    signal: AbortSignal.timeout(30_000),
   });
   const text = await res.text();
   if (!res.ok) {
@@ -48,4 +53,9 @@ export const rest = {
   get: <T>(cfg: Config, path: string) => request<T>(cfg, 'GET', path),
   post: <T>(cfg: Config, path: string, body: unknown) =>
     request<T>(cfg, 'POST', path, body),
+  // grpc-gateway maps ChirpStack's `Update*` RPCs to PUT (with the object's id
+  // in the path), and those updates are full replaces — send the complete
+  // object, not a patch.
+  put: <T>(cfg: Config, path: string, body: unknown) =>
+    request<T>(cfg, 'PUT', path, body),
 };

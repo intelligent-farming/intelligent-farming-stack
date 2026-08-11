@@ -81,12 +81,20 @@ export function sensorCodec(sensor: MockSensor): string {
   return codecScript(sensor.vendor, sensor.device);
 }
 
+// The codec package's own `vectors()` reads and JSON-parses vectors.json on every
+// call — only its `device()` lookup is cached. Both the demo loop and the e2e
+// suite ask for the same vectors repeatedly, so memoize here, at the one place
+// that resolves them, rather than making every caller hoist its own copy.
+const vectorCache = new Map<string, UplinkVector[]>();
+
 /**
  * The sensor's data-carrying uplink vectors (error vectors are filtered out).
  * These are the raw payloads the harness replays and the expected decoded
- * objects the e2e suite asserts against.
+ * objects the e2e suite asserts against. Memoized per sensor id.
  */
 export function dataVectors(sensor: MockSensor): UplinkVector[] {
+  const cached = vectorCache.get(sensor.id);
+  if (cached) return cached;
   const { uplink } = codecVectors(sensor.vendor, sensor.device);
   const out: UplinkVector[] = [];
   for (const raw of uplink as Array<{
@@ -106,5 +114,6 @@ export function dataVectors(sensor: MockSensor): UplinkVector[] {
   if (out.length === 0) {
     throw new Error(`no data vectors for ${sensor.vendor}/${sensor.device}`);
   }
+  vectorCache.set(sensor.id, out);
   return out;
 }

@@ -102,7 +102,9 @@ services:
   # Semtech UDP packet-forwarder gateways (legacy protocol, UDP :1700).
   # The MQTT topic prefix is the REGION flag (default us915_0 — see .env), and must
   # match ChirpStack's enabled region. Flip REGION to us915_1 (or any band whose
-  # region file is present) to change sub-band.
+  # region file is present) to change sub-band. Caveat: that holds for real
+  # gateways. The bundled mock-sensors harness only knows the US915 channel plans
+  # and throws on any other REGION, so a non-US915 band means no mock data.
   chirpstack-gateway-bridge:
     image: chirpstack/chirpstack-gateway-bridge:4
     restart: unless-stopped
@@ -285,14 +287,28 @@ services:
   # with `docker compose --profile mock up -d mock-sensors`. It reads the tenant
   # API key from the shared volume (like Leftenant) and provisions its own
   # gateway/app/profiles/devices (idempotent) before emitting.
+  #
+  # BUILD PREREQUISITE (temporary): run `npm --prefix mock-sensors run pack-codec`
+  # on the host before building this service. Its codec dependency is a tarball
+  # under mock-sensors/vendor/ (lorawan-codec-normalization 0.2.0 is not on npm
+  # yet), and the build context here is ./mock-sensors — Docker cannot reach the
+  # sibling codec checkout, so the tarball has to exist before `docker compose
+  # build`. `npm --prefix mock-sensors run mock:up` does both steps.
+  #
+  # The harness is US915-only: it derives uplink RF params for us915_0/us915_1 and
+  # throws on any other REGION (see mock-sensors/README.md "RF parameters").
   mock-sensors:
     build: ./mock-sensors
     profiles: ["mock"]
     restart: unless-stopped
     environment:
       CHIRPSTACK_REST_URL: http://chirpstack-rest-api:8090
-      GATEWAY_BRIDGE_UDP_HOST: chirpstack-gateway-bridge
-      GATEWAY_BRIDGE_UDP_PORT: "1700"
+      # The harness's Semtech-UDP *target*. Deliberately not GATEWAY_BRIDGE_UDP_*:
+      # at the repo root that name is the published host port mapping
+      # ("${GATEWAY_BRIDGE_UDP_PORT}:1700/udp"), and on this compose network the
+      # target is always the container port 1700 regardless of that mapping.
+      MOCK_UDP_HOST: chirpstack-gateway-bridge
+      MOCK_UDP_PORT: "1700"
       REGION: ${REGION:-us915_0}
       MOCK_INTERVAL_SECONDS: ${MOCK_INTERVAL_SECONDS:-15}
       MOCK_GATEWAY_EUI: ${MOCK_GATEWAY_EUI:-da7a9a7e00000001}
@@ -303,6 +319,13 @@ services:
       provisioner:
         condition: service_completed_successfully
       chirpstack:
+        condition: service_started
+      # All of the harness's own provisioning (gateway, app, profiles, devices)
+      # goes through the REST gateway. Without this it only arrived transitively
+      # via provisioner — whose REST work is conditional on CODECS_DIR — so a cold
+      # `--profile mock up` could hit ECONNREFUSED and crash-loop under
+      # `restart: unless-stopped` until the gateway happened to be listening.
+      chirpstack-rest-api:
         condition: service_started
       chirpstack-gateway-bridge:
         condition: service_started

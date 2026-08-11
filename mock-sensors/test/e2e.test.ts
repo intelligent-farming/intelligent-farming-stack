@@ -5,7 +5,21 @@
  * End-to-end test: a mocked sensor uplink, injected via the Semtech UDP gateway
  * bridge, must be decoded by ChirpStack and land BOTH on the MQTT application
  * stream AND in the Postgres event store — with the decoded `object` matching the
- * codec's own authored expectation.
+ * codec's own authored expectation, and with the transport metadata ChirpStack
+ * reports matching what the emitter actually transmitted.
+ *
+ * Every data vector of every sensor is sent (~14 uplinks over six devices), not
+ * just the first. Two reasons:
+ *   - the data rate is derived from the payload length, so it varies per *vector*
+ *     as well as per sensor (decentlab/dl-trs12 is DR1 for its two 13-byte vectors
+ *     and DR3 for its 7-byte one; milesight-iot/em500-smtc is DR3 at 14 bytes and
+ *     DR2 at 10). Sending only vector 0 would leave that variation — and so the
+ *     transport-metadata assertions below — largely untested; and
+ *   - the vectors are chosen for coverage. decentlab/dl-smtp's three are a full
+ *     8-depth profile, a partial probe with disconnected depths, and a
+ *     battery-only uplink carrying no `channels` key at all — the last being the
+ *     only coverage for the reserved `channels[]` array being *absent* through
+ *     ChirpStack's protobuf-Struct conversion and the PostgreSQL integration.
  *
  * Requires a running stack (see scripts/e2e.sh). Connection details come from the
  * environment / /shared/config.json via loadConfig().
@@ -15,10 +29,17 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Pool } from 'pg';
 
 import { loadConfig, type Config } from '../src/config';
-import { Emitter } from '../src/emit';
+import { Emitter, type EmitResult } from '../src/emit';
 import { provisionAll } from '../src/provision';
 import { SENSORS, dataVectors } from '../src/sensors';
-import { MqttCollector, waitForEventUp } from './helpers';
+import {
+  MqttCollector,
+  byFCnt,
+  eventDr,
+  eventFCnt,
+  eventStoreNow,
+  waitForEventUp,
+} from './helpers';
 
 const cfg: Config = loadConfig();
 
@@ -42,20 +63,69 @@ afterAll(async () => {
 
 describe('mocked sensor uplinks flow through ChirpStack end-to-end', () => {
   for (const sensor of SENSORS) {
-    it(`${sensor.id}: decoded uplink reaches MQTT and event_up`, async () => {
-      const vector = dataVectors(sensor)[0];
+    // Resolve this sensor's vectors once, here at collection time: dataVectors()
+    // re-reads and re-parses the codec package's vector file on every call, and
+    // the list is fixed for the run.
+    const vectors = dataVectors(sensor);
 
-      // Register the MQTT waiter before sending so we can't miss the event.
-      const mqttEvent = collector.waitFor(sensor.devEui, 15_000);
-      await emitter.emit(sensor, vector);
+    describe(sensor.id, () => {
+      vectors.forEach((vector, index) => {
+        it(`vector ${index} (${vector.bytes.length} B): ${vector.description}`, async () => {
+          // The event store's clock, read *before* the send: the row for this
+          // uplink must be stamped at or after it. See eventStoreNow() for why the
+          // bound comes from Postgres and not from this process.
+          const since = await eventStoreNow(pool);
 
-      const evt = await mqttEvent;
-      expect(evt.deviceInfo?.devEui?.toLowerCase()).toBe(sensor.devEui);
-      expect(evt.fPort).toBe(vector.fPort);
-      expect(evt.object).toEqual(vector.expected);
+          // Annotated so the emitter's reported-transmission contract is checked
+          // here at compile time: every expectation below is derived from `sent`,
+          // never hardcoded.
+          const sent: EmitResult = await emitter.emit(sensor, vector);
 
-      const stored = await waitForEventUp(pool, sensor.devEui, 15_000);
-      expect(stored).toEqual(vector.expected);
+          // The MQTT waiter is registered after the send because the FCnt we
+          // correlate on is only known from emit's result. That does not
+          // reintroduce the "missed event" risk the old pre-send registration
+          // guarded against: the collector has buffered every uplink since
+          // beforeAll, and waitFor() scans that buffer by predicate before it
+          // starts waiting, so an event that beat us to the broker is still found.
+          //
+          // Correlating on FCnt is what makes the wait trustworthy at all — the
+          // compose `mock-sensors` demo service publishes for these same six
+          // DevEUIs every MOCK_INTERVAL_SECONDS, cycling every vector, so "the
+          // next event for this DevEUI" is very often not ours.
+          const evt = await collector.waitFor(
+            sensor.devEui,
+            byFCnt(sent.fCnt),
+            15_000,
+            `FCnt ${sent.fCnt}`,
+          );
+
+          expect(evt.deviceInfo?.devEui?.toLowerCase()).toBe(sensor.devEui);
+          expect(eventFCnt(evt)).toBe(sent.fCnt);
+          expect(evt.fPort).toBe(vector.fPort);
+          expect(evt.object).toEqual(vector.expected);
+
+          // Transport metadata. Both values are derived per (sensor, vector) — the
+          // DR from the payload length, the channel from the sensor index — so they
+          // are only ever compared against emit's own report, never a hardcoded
+          // expectation. This is the guard against silently regressing to "every
+          // frame at DR0": a 39–41 byte payload cannot be modulated at SF10BW125
+          // (11-byte limit, and ~600 ms time-on-air, past the FCC dwell limit), yet
+          // ChirpStack polices none of that and stores such a frame happily with
+          // dr = 0, poisoning every downstream airtime/link-budget calculation.
+          expect(eventDr(evt)).toBe(sent.dr);
+          expect(evt.txInfo?.frequency).toBe(sent.frequencyHz); // ChirpStack reports Hz
+
+          // Same frame, read back out of the store — correlated on (DevEUI, FCnt)
+          // and bounded by `since`, so a surviving row from an earlier run (the
+          // event volume is not wiped between runs) can never stand in for it.
+          const stored = await waitForEventUp(pool, sensor.devEui, sent.fCnt, since, 15_000);
+          expect(stored.fCnt).toBe(sent.fCnt);
+          expect(stored.fPort).toBe(vector.fPort);
+          expect(stored.dr).toBe(sent.dr);
+          expect(stored.txInfo?.frequency).toBe(sent.frequencyHz);
+          expect(stored.object).toEqual(vector.expected);
+        });
+      });
     });
   }
 });

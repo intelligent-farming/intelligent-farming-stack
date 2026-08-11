@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Intelligent Farming Foundation
+//
+// Typecheck-only config covering `test/` alongside `src/`.
+//
+// The build config sets `rootDir: "src"` so `dist/` comes out flat, which means it
+// cannot also include `test/` (TS6059). Vitest transpiles the suite with esbuild
+// and never typechecks it, so without this config the e2e suite's types are
+// checked by nothing at all — the assertions could drift from `EmitResult` or the
+// `event_up` row shape and no build step would notice.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["src", "test"]
+}
