@@ -341,13 +341,28 @@ services:
       # Which destinations exist and where each points is set in leadsman.json; per-destination
       # overrides are LEADSMAN_DEST_<NAME>_* — pass any you use through here.
       LEADSMAN_WEBHOOK_TOKEN: ${LEADSMAN_WEBHOOK_TOKEN:-}
-      LEADSMAN_DEST_AGENT_WEBHOOK_URL: ${LEADSMAN_DEST_AGENT_WEBHOOK_URL:-}
+      # Per-destination overrides. Compose only forwards variables it NAMES, so a
+      # LEADSMAN_DEST_<NAME>_* in .env is silently dropped unless it is listed here. These
+      # cover the destination names the shipped configs use (`oncall`, `sms`, `agent`); if you
+      # name a destination something else, add its four lines below or the override will look
+      # set in .env and have no effect.
+      LEADSMAN_DEST_ONCALL_PROVIDER: ${LEADSMAN_DEST_ONCALL_PROVIDER:-}
       LEADSMAN_DEST_ONCALL_TO: ${LEADSMAN_DEST_ONCALL_TO:-}
+      LEADSMAN_DEST_ONCALL_CHAT_ID: ${LEADSMAN_DEST_ONCALL_CHAT_ID:-}
+      LEADSMAN_DEST_ONCALL_WEBHOOK_URL: ${LEADSMAN_DEST_ONCALL_WEBHOOK_URL:-}
+      LEADSMAN_DEST_SMS_PROVIDER: ${LEADSMAN_DEST_SMS_PROVIDER:-}
+      LEADSMAN_DEST_SMS_TO: ${LEADSMAN_DEST_SMS_TO:-}
+      LEADSMAN_DEST_SMS_CHAT_ID: ${LEADSMAN_DEST_SMS_CHAT_ID:-}
+      LEADSMAN_DEST_SMS_WEBHOOK_URL: ${LEADSMAN_DEST_SMS_WEBHOOK_URL:-}
+      LEADSMAN_DEST_AGENT_WEBHOOK_URL: ${LEADSMAN_DEST_AGENT_WEBHOOK_URL:-}
+      LEADSMAN_WEBHOOK_TOKEN_AGENT: ${LEADSMAN_WEBHOOK_TOKEN_AGENT:-}
+      LEADSMAN_WEBHOOK_TOKEN_SMS: ${LEADSMAN_WEBHOOK_TOKEN_SMS:-}
       # Outbound messaging credentials. Blank = that provider is
       # unavailable; a destination configured to use it then fails config validation at
       # startup rather than silently never delivering. See .env.example.
       LEADSMAN_TWILIO_ACCOUNT_SID: ${LEADSMAN_TWILIO_ACCOUNT_SID:-}
-      LEADSMAN_TWILIO_AUTH_TOKEN: ${LEADSMAN_TWILIO_AUTH_TOKEN:-}
+      LEADSMAN_TWILIO_API_KEY_SID: ${LEADSMAN_TWILIO_API_KEY_SID:-}
+      LEADSMAN_TWILIO_API_KEY_SECRET: ${LEADSMAN_TWILIO_API_KEY_SECRET:-}
       LEADSMAN_TWILIO_FROM: ${LEADSMAN_TWILIO_FROM:-}
       LEADSMAN_TELEGRAM_BOT_TOKEN: ${LEADSMAN_TELEGRAM_BOT_TOKEN:-}
       LEADSMAN_SIGNAL_BASE_URL: ${LEADSMAN_SIGNAL_BASE_URL:-}
@@ -372,8 +387,40 @@ services:
           cpus: "${LEADSMAN_CPUS:-0.50}"
           memory: ${LEADSMAN_MEMORY:-256M}
 
+  # ── Signal relay (opt-in) ─────────────────────────────────────────────────────
+  # Signal has no hosted send API, so sending requires signal-cli. This wraps it in an HTTP
+  # service Leadsman can POST to. Behind a compose profile, so a plain `up` never starts it:
+  #
+  #   docker compose --profile signal up -d signal-cli
+  #
+  # One-time registration, which cannot be automated — Signal requires a captcha and an SMS
+  # code against a real number you control (a landline or VoIP number usually will not work):
+  #   1. open https://signalcaptchas.org/registration/generate.html and solve it
+  #   2. copy the signalcaptcha:// link it produces
+  #   3. docker compose exec signal-cli signal-cli -a +1512... register --captcha <link>
+  #   4. docker compose exec signal-cli signal-cli -a +1512... verify <6-digit code>
+  # Then set LEADSMAN_SIGNAL_BASE_URL=http://signal-cli:8080 and LEADSMAN_SIGNAL_FROM=+1512…
+  #
+  # To message a group rather than individuals, list its id in the destination's `to` array —
+  # signal-cli reports group ids as `group.<base64>`:
+  #   docker compose exec signal-cli signal-cli -a +1512... listGroups
+  signal-cli:
+    image: bbernhard/signal-cli-rest-api:latest
+    profiles: ["signal"]
+    restart: unless-stopped
+    environment:
+      # json-rpc keeps signal-cli resident instead of spawning a JVM per request, which on a
+      # 2-core edge device is the difference between a fast send and a multi-second one.
+      MODE: json-rpc
+    volumes:
+      - signalcli:/home/.local/share/signal-cli
+    # Not published: only Leadsman needs to reach it, over the compose network. Publish it
+    # only for the registration steps above if you prefer curl to `exec`.
+
 volumes:
   chirpstack-pgdata:
   redisdata:
   eventsdata:
   shared:
+  # Signal's registered identity and session state. Losing it means re-registering.
+  signalcli:
