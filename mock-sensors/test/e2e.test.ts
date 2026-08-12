@@ -8,18 +8,23 @@
  * codec's own authored expectation, and with the transport metadata ChirpStack
  * reports matching what the emitter actually transmitted.
  *
- * Every data vector of every sensor is sent (~14 uplinks over six devices), not
- * just the first. Two reasons:
+ * Every data vector of every sensor is sent (52 uplinks over 23 devices), not
+ * just the first. Three reasons:
  *   - the data rate is derived from the payload length, so it varies per *vector*
  *     as well as per sensor (decentlab/dl-trs12 is DR1 for its two 13-byte vectors
  *     and DR3 for its 7-byte one; milesight-iot/em500-smtc is DR3 at 14 bytes and
  *     DR2 at 10). Sending only vector 0 would leave that variation — and so the
- *     transport-metadata assertions below — largely untested; and
+ *     transport-metadata assertions below — largely untested;
  *   - the vectors are chosen for coverage. decentlab/dl-smtp's three are a full
  *     8-depth profile, a partial probe with disconnected depths, and a
  *     battery-only uplink carrying no `channels` key at all — the last being the
  *     only coverage for the reserved `channels[]` array being *absent* through
- *     ChirpStack's protobuf-Struct conversion and the PostgreSQL integration.
+ *     ChirpStack's protobuf-Struct conversion and the PostgreSQL integration; and
+ *   - several vectors exist specifically to pin a decode that used to be wrong,
+ *     and they only pin it end-to-end if they are actually sent:
+ *     makerfabs/barometric-pressure's sub-zero temperature, and
+ *     makerfabs/gps-tracker-neo-6m's southern/western fix. Vector 0 of each is
+ *     the benign case.
  *
  * Requires a running stack (see scripts/e2e.sh). Connection details come from the
  * environment / /shared/config.json via loadConfig().
@@ -89,7 +94,7 @@ describe('mocked sensor uplinks flow through ChirpStack end-to-end', () => {
           // starts waiting, so an event that beat us to the broker is still found.
           //
           // Correlating on FCnt is what makes the wait trustworthy at all — the
-          // compose `mock-sensors` demo service publishes for these same six
+          // compose `mock-sensors` demo service publishes for these same 23
           // DevEUIs every MOCK_INTERVAL_SECONDS, cycling every vector, so "the
           // next event for this DevEUI" is very often not ours.
           const evt = await collector.waitFor(

@@ -9,10 +9,10 @@
  * test just sent, because neither stream belongs to the test alone:
  *
  *  - The compose `mock-sensors` demo service (profile `mock`, started by
- *    `npm run stack:up`) emits from the same six DevEUIs every
- *    MOCK_INTERVAL_SECONDS, cycling through *all* of each sensor's vectors, while
- *    the suite only ever sends vector 0. An uncorrelated "next event for this
- *    DevEUI" therefore returns a demo-loop event carrying a different vector.
+ *    `npm run stack:up`) emits from the same 23 DevEUIs every
+ *    MOCK_INTERVAL_SECONDS, cycling through *all* of each sensor's vectors — the
+ *    very vectors the suite sends. An uncorrelated "next event for this DevEUI"
+ *    therefore very often returns a demo-loop event, not the frame just sent.
  *
  *  - `event_up` lives in the named `eventsdata` volume and `scripts/e2e.sh` tears
  *    down with `docker compose down` (no `-v`), so rows survive between runs. An

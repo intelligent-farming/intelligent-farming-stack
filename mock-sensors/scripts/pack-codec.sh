@@ -117,4 +117,36 @@ echo "[pack-codec] packing into $VENDOR_DIR …"
 [ -f "$expected_tarball" ] ||
   die "npm pack did not produce $expected_tarball"
 
-echo "[pack-codec] ok: vendor/$expected_name"
+# Invalidate the previous *install* of this tarball, not just the tarball itself.
+#
+# The codec version stays 0.2.0 across every repack while it is unpublished, so a
+# rebuilt tarball lands at the same path under the same name with different
+# contents. npm does not notice: with a complete node_modules tree it never
+# re-verifies a `file:` dependency, so the `npm install` that follows a repack
+# no-ops and leaves the OLD codec extracted. That is silent and expensive here —
+# the harness takes both its payload bytes and its expected decoded objects from
+# this package, so a stale install means the e2e suite asserts yesterday's codec
+# against yesterday's vectors and passes while proving nothing about the build
+# just packed. (scripts/e2e.sh does exactly pack-then-`npm install`.)
+#
+# So: drop the extracted copy, and drop the lockfile's `integrity`/`resolved` pin
+# for it — that pin is a hash of the tarball we just replaced, and leaving it
+# behind turns the forced re-extract into an EINTEGRITY failure instead. npm
+# re-pins both on the next install.
+rm -rf "$MOCK_DIR/node_modules/@intelligent-farming/lorawan-codec-normalization"
+if [ -f "$MOCK_DIR/package-lock.json" ]; then
+  node - "$MOCK_DIR/package-lock.json" <<'EOF' || die "could not unpin the codec tarball in package-lock.json"
+const fs = require('fs');
+const path = process.argv[2];
+const lock = JSON.parse(fs.readFileSync(path, 'utf8'));
+const key = 'node_modules/@intelligent-farming/lorawan-codec-normalization';
+const entry = (lock.packages || {})[key];
+if (entry && (entry.integrity || entry.resolved)) {
+  delete entry.integrity;
+  delete entry.resolved;
+  fs.writeFileSync(path, JSON.stringify(lock, null, 2) + '\n');
+}
+EOF
+fi
+
+echo "[pack-codec] ok: vendor/$expected_name (previous install invalidated)"

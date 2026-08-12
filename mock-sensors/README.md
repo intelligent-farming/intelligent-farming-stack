@@ -6,7 +6,7 @@ Copyright (C) 2026 Intelligent Farming Foundation
 # mock-sensors
 
 Mock LoRaWAN ag sensors for the `intelligent-farming-stack` bench. It simulates a
-handful of real, different sensors, emits **valid** LoRaWAN uplinks (correct MIC +
+fleet of real, different sensors, emits **valid** LoRaWAN uplinks (correct MIC +
 encrypted payload) via the Semtech UDP gateway bridge — exactly like a real
 packet-forwarder gateway — and lets you watch mocked data flow all the way through
 ChirpStack into the Postgres event store and the MQTT application stream.
@@ -17,24 +17,64 @@ in both sinks.
 
 ## The mocked sensors
 
-Six sensors spanning three payload wire-formats, each backed by a real normalized
-codec from [`@intelligent-farming/lorawan-codec-normalization`](https://github.com/intelligent-farming/lorawan-codec-normalization):
+23 sensors, each backed by a real normalized codec from
+[`@intelligent-farming/lorawan-codec-normalization`](https://github.com/intelligent-farming/lorawan-codec-normalization).
+They fall into two groups with different jobs.
 
-| Sensor | Category | fPort | Notes |
-|--------|----------|-------|-------|
-| `dragino/lse01` | soil-monitor | 2 | |
-| `milesight-iot/em500-smtc` | soil-monitor | 85 | |
-| `decentlab/dl-trs12` | soil-monitor | 1 | |
-| `dragino/llms01` | leaf-wetness | 2 | |
-| `decentlab/dl-atm41` | weather-station | 1 | |
-| `decentlab/dl-smtp` | soil-monitor | 1 | multilayer probe — emits `channels[]` |
+**Wire-format & shape coverage** — a spread of payload formats and output shapes:
 
-`decentlab/dl-smtp` is an 8-depth soil moisture/temperature profile probe. Its
-readings decode into the reserved **`channels[]`** array (one measurement object per
-depth, each with a `channel` label), so it is the fleet's coverage for nested arrays
-surviving ChirpStack's protobuf `Struct` conversion and the PostgreSQL integration.
-Its three data vectors cover a full 8-depth profile, a partial probe with
-disconnected depths, and a battery-only uplink that carries no `channels` key at all.
+| Sensor | Category | fPort | Vectors | Notes |
+|--------|----------|-------|---------|-------|
+| `dragino/lse01` | soil-monitor | 2 | 2 | |
+| `milesight-iot/em500-smtc` | soil-monitor | 85 | 2 | |
+| `decentlab/dl-trs12` | soil-monitor | 1 | 3 | |
+| `dragino/llms01` | leaf-wetness | 2 | 2 | |
+| `decentlab/dl-atm41` | weather-station | 1 | 2 | |
+| `decentlab/dl-smtp` | soil-monitor | 1 | 3 | multilayer probe — emits `channels[]` |
+
+**First-deployment fleet** — the hardware actually going into the ground first, so
+the bench covers the real devices rather than a representative sample of them: the
+SenseCAP S2120 plus the **whole** Makerfabs AgroSense line (every device under
+`codecs/makerfabs/` is AgroSense-branded).
+
+| Sensor | Category | fPort | Vectors | Notes |
+|--------|----------|-------|---------|-------|
+| `sensecap/sensecaps2120-8-in-1` | weather-station | 5 | 2 | 8-in-1 weather sensor; multi-frame ID-prefixed payload |
+| `makerfabs/soil-monitor` | soil-monitor | 1 | 2 | moisture / temp / EC / pH |
+| `makerfabs/soil-moisture` | soil-monitor | 1 | 2 | uncalibrated capacitive count → `analog.raw` |
+| `makerfabs/leaf-moisture-sn-3001` | leaf-wetness | 1 | 2 | `leaf.wetness` + `leaf.temperature` |
+| `makerfabs/barometric-pressure` | weather-station | 1 | 4 | includes a sub-zero temperature vector |
+| `makerfabs/co2` | air-quality | 1 | 3 | |
+| `makerfabs/light-intensity` | light | 2 | 2 | |
+| `makerfabs/ath20` | climate | 2 | 3 | ┐ |
+| `makerfabs/air-temperature-and-humidity` | climate | 2 | 2 | ├ one shared wire format |
+| `makerfabs/temperature-humidity-sht31` | climate | 2 | 3 | ┘ |
+| `makerfabs/rtd-pt1000-temperature` | temperature | 1 | 2 | |
+| `makerfabs/pipe-pressure` | process-pressure | 2 | 2 | |
+| `makerfabs/4-channel-adc` | analog-interface | 1 | 2 | 4 ADC inputs — emits `channels[]` |
+| `makerfabs/positioning-water-leak` | water-leak | 1 | 1 | ┐ one shared wire format |
+| `makerfabs/none-position-rope-water-leak` | water-leak | 1 | 1 | ┘ |
+| `makerfabs/gps-tracker-neo-6m` | gps-tracker | 1 | 3 | ┐ one shared wire format |
+| `makerfabs/gps-tracker-pa1010d` | gps-tracker | 1 | 2 | ┘ |
+
+The families are mocked whole rather than sampled one-per-category on purpose: the
+codecs of the three shared-wire-format groups above are *supposed* to agree on their
+output, and that only becomes a demonstrated fact once both halves of each pair have
+been replayed through ChirpStack.
+
+### `channels[]` coverage
+
+Two sensors emit the reserved **`channels[]`** array (one measurement object per
+sub-sensor position, each with a `channel` label) — the fleet's coverage for nested
+arrays surviving ChirpStack's protobuf `Struct` conversion and the PostgreSQL
+integration:
+
+- `decentlab/dl-smtp`, an 8-depth soil moisture/temperature profile probe. Its three
+  data vectors cover a full 8-depth profile, a partial probe with disconnected
+  depths, and a battery-only uplink that carries no `channels` key at all.
+- `makerfabs/4-channel-adc`, four single-ended ADC inputs as one entry each. Its
+  entries carry an `analog` group where `dl-smtp`'s carry `soil`, so the array is not
+  being proven against a single nesting shape.
 
 The raw payloads and expected decoded values are the codecs' own decode-verified
 test vectors (pulled from the package at runtime), so the mocked data is guaranteed
@@ -62,6 +102,14 @@ drops the tarball into `vendor/`, removing any previous one first. It fails loud
 it never falls back to a stale tarball — if the checkout is missing, is the wrong
 version, or doesn't build. Point it elsewhere with
 `CODEC_REPO_DIR=/path/to/lorawan-codec-normalization`.
+
+It also **invalidates the previous install** of the tarball (drops it from
+`node_modules/` and unpins it in `package-lock.json`). The codec version stays
+`0.2.0` across every repack while it is unpublished, so a rebuilt tarball has the
+same path and the same version with different contents — and npm never re-verifies a
+`file:` dependency it already sees installed. Without that step the `npm install`
+that follows a repack silently no-ops and the suite goes on asserting the *previous*
+codec build's vectors against the previous codec, which passes while proving nothing.
 
 **Run it before `npm install` and before any image build**, i.e. before
 `docker compose --profile mock up -d --build mock-sensors`. The compose service
@@ -100,13 +148,15 @@ sensor index:
 - **Data rate** — every DR whose limit clears the application payload is a legal
   choice; the sensor's index picks one from that set, so the fleet spreads over
   **DR0–DR3** (SF10 / SF9 / SF8 / SF7, all BW125) instead of pinning one. This is
-  not cosmetic: US915 DR0 caps at **11 bytes** and four of the six sensors send
-  13–41 bytes, so the old fixed DR0 was unmodulatable in the air and well past the
+  not cosmetic: US915 DR0 caps at **11 bytes** and most of the fleet sends 12–41
+  bytes, so a fixed DR0 would be unmodulatable in the air and well past the
   FCC 400 ms dwell limit. ChirpStack does not police it — it stores the frame with
   `dr = 0`, which then poisons every downstream airtime and link-budget number.
 - **Channel** — spread across the sub-band's eight 125 kHz channels: `us915_0` →
   ch 0–7 at 902.3 + 0.2·n MHz, `us915_1` → ch 8–15 at 903.9 + 0.2·n MHz. A
-  single-channel bench never exercises the multi-channel path at all.
+  single-channel bench never exercises the multi-channel path at all. The fleet is
+  larger than eight, so the index wraps and several sensors share a channel —
+  which is what a real gateway sees anyway.
 
 Both are deterministic (same sensor + same vector → same DR and channel), so the e2e
 assertions stay stable while still covering more than one link budget. DR4
@@ -139,7 +189,7 @@ have to remember the flags). From elsewhere, prefix with `npm --prefix mock-sens
 
 ## Continuous emission
 
-The `mock` profile runs the emitter **continuously**: it loops over all six sensors every
+The `mock` profile runs the emitter **continuously**: it loops over all 23 sensors every
 `MOCK_INTERVAL_SECONDS` (default 15) forever, so fresh decoded readings keep arriving in Postgres and
 on the MQTT stream until you stop it. The container is `restart: unless-stopped`, so it survives
 restarts too. Use a faster cadence with, e.g., `MOCK_INTERVAL_SECONDS=5 npm run stack:up`.
@@ -183,8 +233,9 @@ any of them in `.env` (or changed `REGION`), export the matching values from the
 bash scripts/e2e.sh
 ```
 
-The suite (`test/e2e.test.ts`) provisions, sends one known payload per sensor, and
-asserts the decoded `object` shows up on MQTT **and** in `event_up`.
+The suite (`test/e2e.test.ts`) provisions, sends every known payload of every sensor
+(52 uplinks across the 23 devices), and asserts each decoded `object` shows up on
+MQTT **and** in `event_up`.
 
 `scripts/e2e.sh` handles the setup a bare `npm run test:e2e` cannot:
 
@@ -196,7 +247,7 @@ asserts the decoded `object` shows up on MQTT **and** in `event_up`.
   timing out — pointing at the wrong layer entirely.
 - packs the codec tarball and reinstalls deps (temporary; see above).
 - **stops the compose `mock-sensors` demo service** if it is running: its loop emits
-  from the same six DevEUIs, so the suite could otherwise assert against a demo
+  from the same 23 DevEUIs, so the suite could otherwise assert against a demo
   frame instead of the one it just sent. It stays stopped — restart it with
   `npm run mock:up`.
 

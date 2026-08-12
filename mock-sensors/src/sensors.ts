@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Intelligent Farming Foundation
 
 /**
- * The handful of mock ag sensors this harness simulates.
+ * The mock ag sensors this harness simulates.
  *
  * Each entry maps to a real normalized codec in
  * `@intelligent-farming/lorawan-codec-normalization`. We pull the console-ready
@@ -63,6 +63,7 @@ function creds(index: number): Pick<
 }
 
 const CATALOG: Omit<MockSensor, 'devEui' | 'devAddr' | 'nwkSKey' | 'appSKey'>[] = [
+  // ---- Wire-format / shape coverage -------------------------------------------
   { id: 'dragino-lse01', vendor: 'dragino', device: 'lse01', category: 'soil-monitor', index: 1 },
   { id: 'milesight-em500-smtc', vendor: 'milesight-iot', device: 'em500-smtc', category: 'soil-monitor', index: 2 },
   { id: 'decentlab-dl-trs12', vendor: 'decentlab', device: 'dl-trs12', category: 'soil-monitor', index: 3 },
@@ -72,6 +73,41 @@ const CATALOG: Omit<MockSensor, 'devEui' | 'devAddr' | 'nwkSKey' | 'appSKey'>[] 
   // entry per depth), which exercises a nested array through ChirpStack's
   // protobuf Struct conversion and the PostgreSQL integration.
   { id: 'decentlab-dl-smtp', vendor: 'decentlab', device: 'dl-smtp', category: 'soil-monitor', index: 6 },
+
+  // ---- First-deployment fleet --------------------------------------------------
+  // Everything below is a device actually going into the ground first, so the
+  // bench covers the real hardware rather than a representative sample of it:
+  // the SenseCAP S2120 weather sensor and the full Makerfabs AgroSense line
+  // (every device under codecs/makerfabs/ is AgroSense-branded — TTN describes
+  // each as "The AgroSense …" with a productURL on agrosense.cc).
+  //
+  // These are deliberately whole-family, not one-per-category: two devices whose
+  // codecs are supposed to agree only demonstrably agree if both are replayed
+  // through ChirpStack. makerfabs/gps-tracker-neo-6m and -pa1010d read one shared
+  // wire format, and makerfabs/{ath20,air-temperature-and-humidity,
+  // temperature-humidity-sht31} read another, so the pairs sit side by side here.
+  { id: 'sensecap-s2120-8-in-1', vendor: 'sensecap', device: 'sensecaps2120-8-in-1', category: 'weather-station', index: 7 },
+
+  { id: 'makerfabs-soil-monitor', vendor: 'makerfabs', device: 'soil-monitor', category: 'soil-monitor', index: 8 },
+  { id: 'makerfabs-soil-moisture', vendor: 'makerfabs', device: 'soil-moisture', category: 'soil-monitor', index: 9 },
+  { id: 'makerfabs-leaf-moisture-sn-3001', vendor: 'makerfabs', device: 'leaf-moisture-sn-3001', category: 'leaf-wetness', index: 10 },
+  { id: 'makerfabs-barometric-pressure', vendor: 'makerfabs', device: 'barometric-pressure', category: 'weather-station', index: 11 },
+  { id: 'makerfabs-co2', vendor: 'makerfabs', device: 'co2', category: 'air-quality', index: 12 },
+  { id: 'makerfabs-light-intensity', vendor: 'makerfabs', device: 'light-intensity', category: 'light', index: 13 },
+  { id: 'makerfabs-ath20', vendor: 'makerfabs', device: 'ath20', category: 'climate', index: 14 },
+  { id: 'makerfabs-air-temperature-and-humidity', vendor: 'makerfabs', device: 'air-temperature-and-humidity', category: 'climate', index: 15 },
+  { id: 'makerfabs-temperature-humidity-sht31', vendor: 'makerfabs', device: 'temperature-humidity-sht31', category: 'climate', index: 16 },
+  { id: 'makerfabs-rtd-pt1000-temperature', vendor: 'makerfabs', device: 'rtd-pt1000-temperature', category: 'temperature', index: 17 },
+  { id: 'makerfabs-pipe-pressure', vendor: 'makerfabs', device: 'pipe-pressure', category: 'process-pressure', index: 18 },
+  // Second `channels[]` emitter in the fleet, and the only non-soil one: four
+  // single-ended ADC inputs as one entry each. decentlab/dl-smtp covers a probe
+  // whose entries carry a `soil` group; this covers entries carrying `analog`,
+  // so the flattener is not being proven against a single nesting shape.
+  { id: 'makerfabs-4-channel-adc', vendor: 'makerfabs', device: '4-channel-adc', category: 'analog-interface', index: 19 },
+  { id: 'makerfabs-positioning-water-leak', vendor: 'makerfabs', device: 'positioning-water-leak', category: 'water-leak', index: 20 },
+  { id: 'makerfabs-none-position-rope-water-leak', vendor: 'makerfabs', device: 'none-position-rope-water-leak', category: 'water-leak', index: 21 },
+  { id: 'makerfabs-gps-tracker-neo-6m', vendor: 'makerfabs', device: 'gps-tracker-neo-6m', category: 'gps-tracker', index: 22 },
+  { id: 'makerfabs-gps-tracker-pa1010d', vendor: 'makerfabs', device: 'gps-tracker-pa1010d', category: 'gps-tracker', index: 23 },
 ];
 
 export const SENSORS: MockSensor[] = CATALOG.map((c) => ({ ...c, ...creds(c.index) }));

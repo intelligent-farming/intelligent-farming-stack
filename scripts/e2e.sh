@@ -147,7 +147,7 @@ else
   echo "[e2e] stack already running — reusing it"
 fi
 
-# The compose demo generator emits from the same six DevEUIs on a loop, so if it is
+# The compose demo generator emits from the same 23 DevEUIs on a loop, so if it is
 # up (e.g. from `npm run stack:up`) the suite can end up asserting against a
 # demo-loop event instead of the frame it just sent. Stop it for the duration; it
 # is opt-in and stays stopped afterwards — restart with `npm run mock:up`.
