@@ -288,13 +288,6 @@ services:
   # API key from the shared volume (like Leftenant) and provisions its own
   # gateway/app/profiles/devices (idempotent) before emitting.
   #
-  # BUILD PREREQUISITE (temporary): run `npm --prefix mock-sensors run pack-codec`
-  # on the host before building this service. Its codec dependency is a tarball
-  # under mock-sensors/vendor/ (lorawan-codec-normalization 0.2.0 is not on npm
-  # yet), and the build context here is ./mock-sensors — Docker cannot reach the
-  # sibling codec checkout, so the tarball has to exist before `docker compose
-  # build`. `npm --prefix mock-sensors run mock:up` does both steps.
-  #
   # The harness is US915-only: it derives uplink RF params for us915_0/us915_1 and
   # throws on any other REGION (see mock-sensors/README.md "RF parameters").
   mock-sensors:

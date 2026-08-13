@@ -80,42 +80,9 @@ The raw payloads and expected decoded values are the codecs' own decode-verified
 test vectors (pulled from the package at runtime), so the mocked data is guaranteed
 to decode and the tests compare against the codec's authored output.
 
-### Local codec tarball (temporary) — required prebuild step
-
-> **This is scaffolding, not the intended end state.** It exists so a *draft* PR can
-> show this repo and the codec repo working together. **The final PR must land only
-> after `lorawan-codec-normalization` 0.2.0 is published to npm**, with the
-> dependency changed to a `^0.2.0` range and `vendor/` + `scripts/pack-codec.sh`
-> deleted. Nothing else here depends on the tarball path.
-
-`channels[]` ships in `lorawan-codec-normalization` **0.2.0**, which is not yet on
-npm, so the dependency points at a locally-built tarball under `vendor/`
-(git-ignored, and *not* tracked — a fresh clone has no `vendor/` at all) rather
-than a published range. Build it from a sibling checkout of the codec repo:
-
-```sh
-npm run pack-codec        # from mock-sensors/
-```
-
-That runs `npm run build` + `npm pack` in `../../lorawan-codec-normalization` and
-drops the tarball into `vendor/`, removing any previous one first. It fails loudly —
-it never falls back to a stale tarball — if the checkout is missing, is the wrong
-version, or doesn't build. Point it elsewhere with
-`CODEC_REPO_DIR=/path/to/lorawan-codec-normalization`.
-
-It also **invalidates the previous install** of the tarball (drops it from
-`node_modules/` and unpins it in `package-lock.json`). The codec version stays
-`0.2.0` across every repack while it is unpublished, so a rebuilt tarball has the
-same path and the same version with different contents — and npm never re-verifies a
-`file:` dependency it already sees installed. Without that step the `npm install`
-that follows a repack silently no-ops and the suite goes on asserting the *previous*
-codec build's vectors against the previous codec, which passes while proving nothing.
-
-**Run it before `npm install` and before any image build**, i.e. before
-`docker compose --profile mock up -d --build mock-sensors`. The compose service
-builds with context `./mock-sensors`, so the Dockerfile cannot reach a sibling repo
-— the pack has to happen on the host. `npm run mock:up`, `npm run stack:up`, and
-`../scripts/e2e.sh` all run it for you; a raw `docker compose ... --build` does not.
+`channels[]` ships in `lorawan-codec-normalization` **0.2.0**, so that is the minimum
+version this harness depends on (`^0.2.0`, from npm). `package-lock.json` is
+committed, so `npm ci` and the image build both install an exact, reproducible tree.
 
 ## How it works
 
@@ -170,12 +137,11 @@ have to remember the flags). From elsewhere, prefix with `npm --prefix mock-sens
 
 | Command | What it does |
 |---------|--------------|
-| `npm run pack-codec` | Build the codec tarball into `vendor/` from the sibling checkout (temporary — see above). Required before any `npm install` or image build. |
-| `npm run stack:up` | Bring up the whole data path **and** the mock generator (excludes Leftenant, so no git build needed). Packs the codec first. Idempotent. |
+| `npm run stack:up` | Bring up the whole data path **and** the mock generator (excludes Leftenant, so no git build needed). Idempotent. |
 | `npm run stack:down` | Stop & remove all containers, **keep** data volumes. |
 | `npm run stack:reset` | Stop & remove all containers **and wipe** data (full reset). |
 | `npm run stack:ps` | Show container status. |
-| `npm run mock:up` | Pack the codec, then (re)build & start just the mock generator against an already-running stack. |
+| `npm run mock:up` | (Re)build & start just the mock generator against an already-running stack. |
 | `npm run mock:stop` | Stop the mock generator (leaves the rest of the stack up). |
 | `npm run mock:logs` | Follow the emitter log (one line per uplink sent). |
 | `npm run watch:mqtt` | Live-tail ChirpStack's decoded uplink app events (MQTT). Ctrl-C to stop. |
@@ -198,12 +164,11 @@ restarts too. Use a faster cadence with, e.g., `MOCK_INTERVAL_SECONDS=5 npm run 
 
 ```sh
 # from the stack repo root, with the stack already up (bash setup.sh)
-npm --prefix mock-sensors run pack-codec   # temporary prebuild — see above
 docker compose --profile mock up -d --build mock-sensors
 docker compose --profile mock logs -f mock-sensors
 ```
 
-`npm --prefix mock-sensors run mock:up` does both steps in one go.
+`npm --prefix mock-sensors run mock:up` does the build/start step for you.
 
 Then watch it populate GraphiQL (http://localhost:5050/graphiql), the ChirpStack UI,
 or Leftenant. Tune the cadence with `MOCK_INTERVAL_SECONDS` (default 15).
@@ -212,8 +177,7 @@ or Leftenant. Tune the cadence with `MOCK_INTERVAL_SECONDS` (default 15).
 
 ```sh
 cd mock-sensors
-npm run pack-codec     # temporary prebuild — must precede npm install
-npm install
+npm ci
 # point at a running stack; get the key/tenant from the shared volume (see scripts/e2e.sh)
 export CHIRPSTACK_API_KEY=... CHIRPSTACK_TENANT_ID=...
 npm run provision      # one-shot: create gateway/app/profiles/devices
@@ -245,7 +209,7 @@ MQTT **and** in `event_up`.
   uses the built-in localhost defaults and a remapped port, a changed
   `EVENTS_POSTGRES_PASSWORD`, or `REGION=us915_1` shows up as every assertion
   timing out — pointing at the wrong layer entirely.
-- packs the codec tarball and reinstalls deps (temporary; see above).
+- installs the harness's deps with `npm ci`, so the run uses the exact locked tree.
 - **stops the compose `mock-sensors` demo service** if it is running: its loop emits
   from the same 23 DevEUIs, so the suite could otherwise assert against a demo
   frame instead of the one it just sent. It stays stopped — restart it with
