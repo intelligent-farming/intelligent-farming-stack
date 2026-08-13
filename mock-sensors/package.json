@@ -1,0 +1,53 @@
+{
+  "name": "@intelligent-farming/mock-sensors",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mock LoRaWAN ag sensors that inject valid uplinks into the intelligent-farming-stack bench, for demos and end-to-end tests.",
+  "license": "AGPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/intelligent-farming/intelligent-farming-stack.git"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck:test": "tsc -p tsconfig.test.json",
+    "pack-codec": "bash scripts/pack-codec.sh",
+    "provision": "tsx src/cli.ts provision",
+    "run": "tsx src/cli.ts run",
+    "test:e2e": "vitest run",
+    "stack:up": "npm run pack-codec && docker compose -f ../docker-compose.yml --profile mock up -d --build chirpstack-postgres redis mosquitto events-postgres chirpstack chirpstack-rest-api chirpstack-gateway-bridge events-api mock-sensors",
+    "stack:down": "docker compose -f ../docker-compose.yml --profile mock down",
+    "stack:reset": "docker compose -f ../docker-compose.yml --profile mock down -v",
+    "stack:ps": "docker compose -f ../docker-compose.yml --profile mock ps -a",
+    "mock:up": "npm run pack-codec && docker compose -f ../docker-compose.yml --profile mock up -d --build mock-sensors",
+    "mock:stop": "docker compose -f ../docker-compose.yml --profile mock stop mock-sensors",
+    "mock:logs": "docker compose -f ../docker-compose.yml --profile mock logs -f mock-sensors",
+    "watch:mqtt": "docker compose -f ../docker-compose.yml exec mosquitto mosquitto_sub -t 'application/+/device/+/event/up' -v",
+    "watch:db": "docker compose -f ../docker-compose.yml exec events-postgres psql -U events -d chirpstack_events -c 'select time, dev_eui, f_port, object from event_up order by time desc limit 20;'",
+    "watch:db:count": "docker compose -f ../docker-compose.yml exec events-postgres psql -U events -d chirpstack_events -c 'select count(*) as event_up_rows from event_up;'",
+    "watch:graphql": "curl -s http://localhost:5050/graphql -H 'Content-Type: application/json' --data '{\"query\":\"{ allEventUps(orderBy: TIME_DESC, first: 10){ nodes { devEui deviceName fPort object } } }\"}'"
+  },
+  "//dependencies": [
+    "TEMPORARY: the codec dependency points at a locally-built tarball because 0.2.0",
+    "(the version carrying channels[]) is not published to npm yet. vendor/*.tgz is",
+    "git-ignored and produced on the HOST by `npm run pack-codec` from a sibling",
+    "lorawan-codec-normalization checkout — the compose build context is ./mock-sensors,",
+    "so the Dockerfile cannot reach the sibling repo itself.",
+    "The final PR must land only after 0.2.0 is on npm, with this dependency changed to",
+    "\"^0.2.0\" and vendor/ + scripts/pack-codec.sh deleted."
+  ],
+  "dependencies": {
+    "@intelligent-farming/lorawan-codec-normalization": "file:vendor/intelligent-farming-lorawan-codec-normalization-0.2.0.tgz",
+    "lora-packet": "^0.9.3",
+    "mqtt": "^5.5.0",
+    "pg": "^8.11.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/pg": "^8.11.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  }
+}

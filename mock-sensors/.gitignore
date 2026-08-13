@@ -1,0 +1,9 @@
+node_modules/
+dist/
+package-lock.json
+
+# Locally-built codec package tarball, produced by scripts/pack-codec.sh (see the
+# README's "Local codec tarball" section). A build artifact, so it is not tracked —
+# temporary until lorawan-codec-normalization 0.2.0 is published to npm, at which
+# point vendor/ and the pack script are deleted.
+vendor/*.tgz

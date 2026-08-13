@@ -284,6 +284,61 @@ docker compose exec mosquitto mosquitto_sub -t "+/gateway/#" -v   # frames on th
 If the bridge log shows the gateway but ChirpStack still reads "never seen", the registered Gateway
 EUI doesn't match what the gateway reports.
 
+## Mock data (demo & end-to-end tests)
+
+No gateway or sensors? The bundled [`mock-sensors`](./mock-sensors) harness simulates a fleet of 23
+real ag sensors — a wire-format spread (Dragino, Milesight, Decentlab, including a multilayer soil
+profile probe) plus the first-deployment hardware (SenseCAP S2120 and the whole Makerfabs AgroSense
+line) — and injects **valid**
+LoRaWAN uplinks (correct MIC + encrypted payload) via the Semtech UDP gateway bridge, exactly like a
+real packet-forwarder gateway. The mocked readings therefore flow through the whole pipeline — gateway
+bridge → ChirpStack decode → `event_up` (Postgres) **and** the MQTT application stream — so you can see
+the stack working end-to-end. It provisions its own gateway/application/device-profiles/devices
+(idempotent) and attaches each sensor's normalized codec to its profile, so decoded values show up
+regardless of the optional [`CODECS_DIR`](#codecs-optional) attach path below.
+
+The harness is **US915-only** — it derives uplink RF parameters for `us915_0`/`us915_1` and throws on
+any other [`REGION`](#region--sub-band), so a non-US915 bench gets no mock data.
+
+> **Prerequisite (temporary).** The harness depends on `lorawan-codec-normalization` **0.2.0**, which
+> is not published to npm yet, so it installs a tarball built on the host from a sibling checkout of
+> [that repo](https://github.com/intelligent-farming/lorawan-codec-normalization) — clone it next to
+> this one. Run this **before** building the image or installing deps:
+> ```sh
+> npm --prefix mock-sensors run pack-codec     # builds mock-sensors/vendor/*.tgz
+> ```
+> The compose service builds with context `./mock-sensors`, so the Dockerfile cannot reach the sibling
+> repo itself — the pack has to happen on the host. `scripts/e2e.sh` and
+> `npm --prefix mock-sensors run mock:up` do it for you. This whole step (and `mock-sensors/vendor/`)
+> disappears once 0.2.0 is on npm and the dependency becomes a `^0.2.0` range.
+
+Run the continuous demo generator (stack already up):
+
+```sh
+npm --prefix mock-sensors run pack-codec             # temporary; see above
+docker compose --profile mock up -d --build mock-sensors     # opt-in; never runs by default
+docker compose --profile mock logs -f mock-sensors
+```
+
+Watch it populate GraphiQL (http://localhost:5050/graphiql), the ChirpStack UI, or Leftenant. Tune the
+cadence with `MOCK_INTERVAL_SECONDS` (default 15). Stop it with
+`docker compose --profile mock stop mock-sensors` (the `mock` profile has to be named for compose to
+see the service at all).
+
+Run the end-to-end test (boots the stack if needed, then tears down only what it started):
+
+```sh
+bash scripts/e2e.sh
+```
+
+It provisions the mock devices, sends every known payload of every sensor, and asserts each decoded
+`object` lands on MQTT **and** in `event_up`. The script runs on the host, so it reads this repo's `.env` (the
+same file compose reads) and points the suite at the ports, credentials and `REGION` configured there
+rather than at hardcoded localhost defaults. It also **stops the `mock-sensors` demo service** for the
+run — the demo loop emits from the same DevEUIs and would otherwise race the assertions — and leaves
+it stopped. See [`mock-sensors/README.md`](./mock-sensors/README.md) for standalone usage and
+configuration.
+
 ## Codecs (optional)
 
 If codec `.js` files are present at `CODECS_DIR` (default `./codecs`), the provisioner runs
