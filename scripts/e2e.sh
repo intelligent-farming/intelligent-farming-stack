@@ -105,20 +105,13 @@ echo "[e2e] region ${REGION} · rest ${CHIRPSTACK_REST_URL} · mqtt ${MOCK_MQTT_
 echo "[e2e] udp ${MOCK_UDP_HOST}:${MOCK_UDP_PORT} · events db localhost:${EVENTS_POSTGRES_HOST_PORT}/${EVENTS_POSTGRES_DB}"
 
 # ── host-side build of the harness (before anything slow) ──────────────────────
-# TEMPORARY: build the codec tarball mock-sensors depends on from the sibling
-# checkout, because lorawan-codec-normalization 0.2.0 is not on npm yet. Delete
-# this step (and mock-sensors/vendor/) once it is published — see
-# mock-sensors/scripts/pack-codec.sh. Deliberately ahead of the compose boot: a
-# missing sibling checkout then fails in seconds instead of after a full stack
-# start that would immediately be torn down again.
-echo "[e2e] packing the codec dependency from the sibling checkout…"
-bash "$ROOT_DIR/mock-sensors/scripts/pack-codec.sh"
-
-# Always reinstall: the pack step above rewrites vendor/*.tgz on every run, and npm
-# will happily keep an already-extracted copy of a `file:` dependency otherwise —
-# which is how you end up testing yesterday's codec.
+# `npm ci` rather than `npm install`: it installs the committed lockfile exactly, so
+# the suite tests the codec version the lockfile pins instead of whatever an earlier
+# run happened to leave in node_modules. Deliberately ahead of the compose boot — a
+# dependency problem then fails in seconds instead of after a full stack start that
+# would immediately be torn down again.
 echo "[e2e] installing mock-sensors deps…"
-(cd "$ROOT_DIR/mock-sensors" && npm install --no-audit --no-fund)
+(cd "$ROOT_DIR/mock-sensors" && npm ci --no-audit --no-fund)
 
 # Long-running services the data path needs — deliberately excludes `leftenant`
 # (its image is built out-of-band from git and isn't needed here). The one-shot
