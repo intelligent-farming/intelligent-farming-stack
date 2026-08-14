@@ -468,22 +468,9 @@ regardless of the optional [`CODECS_DIR`](#codecs-optional) attach path below.
 The harness is **US915-only** — it derives uplink RF parameters for `us915_0`/`us915_1` and throws on
 any other [`REGION`](#region--sub-band), so a non-US915 bench gets no mock data.
 
-> **Prerequisite (temporary).** The harness depends on `lorawan-codec-normalization` **0.2.0**, which
-> is not published to npm yet, so it installs a tarball built on the host from a sibling checkout of
-> [that repo](https://github.com/intelligent-farming/lorawan-codec-normalization) — clone it next to
-> this one. Run this **before** building the image or installing deps:
-> ```sh
-> npm --prefix mock-sensors run pack-codec     # builds mock-sensors/vendor/*.tgz
-> ```
-> The compose service builds with context `./mock-sensors`, so the Dockerfile cannot reach the sibling
-> repo itself — the pack has to happen on the host. `scripts/e2e.sh` and
-> `npm --prefix mock-sensors run mock:up` do it for you. This whole step (and `mock-sensors/vendor/`)
-> disappears once 0.2.0 is on npm and the dependency becomes a `^0.2.0` range.
-
 Run the continuous demo generator (stack already up):
 
 ```sh
-npm --prefix mock-sensors run pack-codec             # temporary; see above
 docker compose --profile mock up -d --build mock-sensors     # opt-in; never runs by default
 docker compose --profile mock logs -f mock-sensors
 ```
