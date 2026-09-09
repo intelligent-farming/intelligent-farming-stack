@@ -3,6 +3,12 @@
 .env.local
 .env.*.local
 
+# Operator's live Leadsman config, copied from leadsman.example.json by setup.
+# Ignored for the same reason .env is: it is edited per deployment (which checks are
+# enabled, local thresholds), and tracking it would mean every install has a dirty
+# working tree and an update either clobbers those edits or conflicts with them.
+leadsman/leadsman.json
+
 # bench-only codec payloads (Makerfabs-derived, not redistributable)
 codecs/*.js
 

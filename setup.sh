@@ -77,6 +77,16 @@ else
   log "Using existing .env."
 fi
 
+# ── leadsman config ──────────────────────────────────────────────────────────
+# Same idiom as .env: the example is tracked, the live copy is git-ignored. Which
+# checks are enabled is a per-deployment decision, so an update must never clobber it.
+if [ ! -f leadsman/leadsman.json ]; then
+  log "Creating leadsman/leadsman.json from the example (8 fleet-health checks enabled)."
+  cp leadsman/leadsman.example.json leadsman/leadsman.json
+else
+  log "Using existing leadsman/leadsman.json."
+fi
+
 # ── Gateway Bridge host (for physical gateways) ──────────────────────────────
 # A physical gateway forwards LoRaWAN packets to the Gateway Bridge at the HOST's
 # LAN IP (a gateway can't reach `localhost`, and a bridged container can't see
@@ -154,6 +164,41 @@ if [ "$PROV_RC" != "0" ]; then
 fi
 log "Provisioner completed successfully."
 
+# ── verify the leadsman schema migration succeeded ───────────────────────────
+# One-shot, like the provisioner: it creates the `leadsman` schema (and indexes the
+# event_* tables) before the engine and events-api start. Worth reporting explicitly,
+# because events-api will not boot without that schema — so a silent failure here
+# looks like a GraphQL problem rather than a migration one.
+LEADSMAN_MIGRATE_CID=$($COMPOSE ps -aq leadsman-migrate 2>/dev/null | tail -1)
+if [ -n "$LEADSMAN_MIGRATE_CID" ]; then
+  LM_RC=$(docker inspect -f '{{.State.ExitCode}}' "$LEADSMAN_MIGRATE_CID" 2>/dev/null || echo "unknown")
+  if [ "$LM_RC" != "0" ]; then
+    warn "leadsman-migrate exit code = $LM_RC. Recent logs:"
+    $COMPOSE logs --tail 20 leadsman-migrate || true
+    warn "the alert schema was not created — leadsman and events-api will not start."
+  else
+    log "Leadsman schema migration completed successfully."
+  fi
+fi
+
+# ── leadsman engine role ─────────────────────────────────────────────────────
+# The role is normally created by events-initdb/020_leadsman_role.sh, but initdb only
+# runs on a FRESH volume — so a stack that predates Leadsman would come up with the
+# engine in a crash loop against a role that does not exist. The script is idempotent
+# (it checks pg_roles first), so just run it every time and the upgrade needs no manual
+# step. Cheap: three queries against a local socket.
+if [ -n "$($COMPOSE ps -q events-postgres 2>/dev/null)" ]; then
+  if $COMPOSE exec -T events-postgres bash /docker-entrypoint-initdb.d/020_leadsman_role.sh >/dev/null 2>&1; then
+    # If the engine was already crash-looping on a missing role, it needs a nudge to
+    # pick up working credentials rather than waiting out its restart backoff.
+    $COMPOSE restart leadsman >/dev/null 2>&1 || true
+    log "Leadsman engine role verified."
+  else
+    warn "could not verify the Leadsman engine role. Run it by hand to see why:"
+    warn "  $COMPOSE exec events-postgres bash /docker-entrypoint-initdb.d/020_leadsman_role.sh"
+  fi
+fi
+
 # ── report ───────────────────────────────────────────────────────────────────
 LEFT_PORT=$(env_val LEFTENANT_HOST_PORT 4173)
 CS_PORT=$(env_val CHIRPSTACK_HOST_PORT 8080)
@@ -177,5 +222,14 @@ printf '  %-22s %s  (login %s / %s)\n' "ChirpStack admin" "http://localhost:${CS
 printf '  %-22s %s\n' "ChirpStack REST API" "http://localhost:${CS_REST_PORT}"
 printf '  %-22s %s\n' "Event GraphQL IDE" "http://localhost:${EVENTS_PORT}/graphiql"
 [ -n "$TENANT_ID" ] && printf '\n  Provisioned tenant: "%s" (id %s)\n' "$(env_val TENANT_NAME 'Intelligent Farming')" "$TENANT_ID"
+
+# Alerting is on by default but publishes no port, so it needs saying out loud —
+# otherwise the only sign it exists is a container in `compose ps`.
+echo
+LEADSMAN_ENABLED=$(grep -c '"enabled": *true' ./leadsman/leadsman.json 2>/dev/null || echo "?")
+log "Alerting (leadsman) is running ${LEADSMAN_ENABLED} checks on a schedule. It publishes no port."
+printf '  %-22s %s\n' "Choose checks" "./leadsman/leadsman.json  (then: $COMPOSE restart leadsman)"
+printf '  %-22s %s\n' "List all checks" "$COMPOSE run --rm leadsman list"
+printf '  %-22s %s\n' "Open alerts (GraphQL)" "{ allOpenAlerts { nodes { devEui kind severity summary raisedAt } } }"
 echo
 log "Done. Tail logs with: $COMPOSE logs -f"

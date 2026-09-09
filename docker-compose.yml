@@ -216,6 +216,10 @@ services:
       # Read-only role PostGraphile connects as (created by initdb 010_events_roles.sh).
       POSTGRES_API_USER: ${EVENTS_POSTGRES_API_USER:-events_api}
       POSTGRES_API_PASSWORD: ${EVENTS_POSTGRES_API_PASSWORD:-changeme-api}
+      # Engine role Leadsman connects as (created by initdb 020_leadsman_role.sh):
+      # SELECT on public, INSERT/UPDATE on the leadsman schema. No DDL, no DELETE.
+      POSTGRES_LEADSMAN_USER: ${POSTGRES_LEADSMAN_USER:-leadsman}
+      POSTGRES_LEADSMAN_PASSWORD: ${POSTGRES_LEADSMAN_PASSWORD:-changeme-leadsman}
       # Opt-in read-only replication role for Fivetran; the same init script creates
       # it (+ publication) only when both are set (blank = disabled).
       POSTGRES_FIVETRAN_USER: ${EVENTS_POSTGRES_FIVETRAN_USER:-}
@@ -235,6 +239,14 @@ services:
       interval: 5s
       timeout: 5s
       retries: 12
+      # Without start_period, probe failures during startup count against `retries`, so the
+      # whole budget is 12 x 5s = 60s. That is fine for a first boot on a laptop, but this
+      # store grows and lives on slow edge hardware: after an unclean stop Postgres replays
+      # WAL before accepting connections, and on a 2-core box with a large data directory
+      # that can take longer than a minute. Exceeding it makes every dependent service abort
+      # with "container events-postgres is unhealthy" — which reads as a broken database
+      # rather than an impatient healthcheck. Probes during start_period do not count.
+      start_period: 120s
 
   # One-shot: block until ChirpStack has created its event_up table, so events-api
   # introspects a populated schema on first boot (matches the provisioner idiom).
@@ -270,6 +282,9 @@ services:
       # they don't show up in the container's process list.
       DATABASE_URL: postgres://${EVENTS_POSTGRES_API_USER:-events_api}:${EVENTS_POSTGRES_API_PASSWORD:-changeme-api}@events-postgres:5432/${EVENTS_POSTGRES_DB:-chirpstack_events}
       API_GRAPHIQL: ${EVENTS_API_GRAPHIQL:-true}
+      # Schemas exposed over GraphQL. `leadsman` puts the rule engine's open alerts on
+      # the same endpoint as the telemetry. Set `public` alone if you remove Leadsman.
+      API_SCHEMAS: ${EVENTS_API_SCHEMAS:-public,leadsman}
     ports:
       # host 5050 by default: port 5000 is taken by the macOS AirPlay Receiver.
       - "${EVENTS_API_HOST_BIND:-127.0.0.1}:${EVENTS_API_HOST_PORT:-5050}:5000"
@@ -278,6 +293,159 @@ services:
         condition: service_healthy
       events-schema-wait:
         condition: service_completed_successfully
+      # PostGraphile will not start against a schema that does not exist yet, so the
+      # leadsman schema has to be created before this service boots. Drop this entry
+      # (and set EVENTS_API_SCHEMAS=public) if you remove the Leadsman services.
+      leadsman-migrate:
+        condition: service_completed_successfully
+
+  # ── Leadsman (scheduled rule engine over the event store) ─────────────────────
+  # Deterministic monitoring: reads the ChirpStack event_* tables on a cron and writes
+  # alerts to the `leadsman` schema in the same database. Zero LLM tokens — an agent
+  # (Hermes, or anything else) subscribes to the alerts rather than polling telemetry.
+  # Nothing is published to the host; the alert surface is reached over the existing
+  # read-only GraphQL at :5050, or by delivery to notify.destinations.
+
+  # One-shot: create the `leadsman` schema (and, by default, index the event_* tables)
+  # before the engine starts. Runs as the OWNER role — DDL is deliberately outside the
+  # engine role's rights, so the long-running container cannot alter any schema.
+  leadsman-migrate:
+    image: ${LEADSMAN_IMAGE:-ghcr.io/intelligent-farming/leadsman:0.2}
+    restart: "no"
+    command: ["migrate"]
+    environment:
+      LEADSMAN_MIGRATE_URL: postgres://${EVENTS_POSTGRES_USER:-events}:${EVENTS_POSTGRES_PASSWORD:-changeme}@events-postgres:5432/${EVENTS_POSTGRES_DB:-chirpstack_events}
+      # ChirpStack ships event_* with a primary-key index only, and every check filters
+      # by time and groups by dev_eui — unindexed, each sounding is a sequential scan,
+      # which is how a monitor starts degrading the thing it monitors. On by default
+      # because this stack owns events-postgres outright; the tables are empty on a
+      # fresh volume so the CREATE INDEXes are instant. Set false to skip them.
+      LEADSMAN_APPLY_EVENT_INDEXES: ${LEADSMAN_APPLY_EVENT_INDEXES:-true}
+      LEADSMAN_LOG_FORMAT: ${LEADSMAN_LOG_FORMAT:-text}
+    depends_on:
+      events-postgres:
+        condition: service_healthy
+      # The index migration touches event_up, so wait for ChirpStack to have created it.
+      events-schema-wait:
+        condition: service_completed_successfully
+
+  leadsman:
+    image: ${LEADSMAN_IMAGE:-ghcr.io/intelligent-farming/leadsman:0.2}
+    restart: unless-stopped
+    environment:
+      # Engine role: SELECT on public (read ChirpStack events), INSERT/UPDATE on the
+      # leadsman schema (write its own alerts). It cannot alter ChirpStack's data.
+      LEADSMAN_DATABASE_URL: postgres://${POSTGRES_LEADSMAN_USER:-leadsman}:${POSTGRES_LEADSMAN_PASSWORD:-changeme-leadsman}@events-postgres:5432/${EVENTS_POSTGRES_DB:-chirpstack_events}
+      LEADSMAN_CONFIG: /etc/leadsman/leadsman.json
+      LEADSMAN_LOG_LEVEL: ${LEADSMAN_LOG_LEVEL:-info}
+      LEADSMAN_LOG_FORMAT: ${LEADSMAN_LOG_FORMAT:-json}
+      # Shared-secret fallback for webhook destinations that have no token of their own.
+      # Which destinations exist and where each points is set in leadsman.json; per-destination
+      # overrides are LEADSMAN_DEST_<NAME>_* — pass any you use through here.
+      LEADSMAN_WEBHOOK_TOKEN: ${LEADSMAN_WEBHOOK_TOKEN:-}
+      # Per-destination overrides. Compose only forwards variables it NAMES, so a
+      # LEADSMAN_DEST_<NAME>_* in .env is silently dropped unless it is listed here. These
+      # cover the destination names the shipped configs use (`oncall`, `sms`, `agent`); if you
+      # name a destination something else, add its four lines below or the override will look
+      # set in .env and have no effect.
+      LEADSMAN_DEST_ONCALL_PROVIDER: ${LEADSMAN_DEST_ONCALL_PROVIDER:-}
+      LEADSMAN_DEST_ONCALL_TO: ${LEADSMAN_DEST_ONCALL_TO:-}
+      LEADSMAN_DEST_ONCALL_CHAT_ID: ${LEADSMAN_DEST_ONCALL_CHAT_ID:-}
+      LEADSMAN_DEST_ONCALL_WEBHOOK_URL: ${LEADSMAN_DEST_ONCALL_WEBHOOK_URL:-}
+      LEADSMAN_DEST_SMS_PROVIDER: ${LEADSMAN_DEST_SMS_PROVIDER:-}
+      LEADSMAN_DEST_SMS_TO: ${LEADSMAN_DEST_SMS_TO:-}
+      LEADSMAN_DEST_SMS_CHAT_ID: ${LEADSMAN_DEST_SMS_CHAT_ID:-}
+      LEADSMAN_DEST_SMS_WEBHOOK_URL: ${LEADSMAN_DEST_SMS_WEBHOOK_URL:-}
+      LEADSMAN_DEST_AGENT_WEBHOOK_URL: ${LEADSMAN_DEST_AGENT_WEBHOOK_URL:-}
+      LEADSMAN_WEBHOOK_TOKEN_AGENT: ${LEADSMAN_WEBHOOK_TOKEN_AGENT:-}
+      LEADSMAN_WEBHOOK_TOKEN_SMS: ${LEADSMAN_WEBHOOK_TOKEN_SMS:-}
+      # Outbound messaging credentials. Blank = that provider is
+      # unavailable; a destination configured to use it then fails config validation at
+      # startup rather than silently never delivering. See .env.example.
+      LEADSMAN_TWILIO_ACCOUNT_SID: ${LEADSMAN_TWILIO_ACCOUNT_SID:-}
+      LEADSMAN_TWILIO_API_KEY_SID: ${LEADSMAN_TWILIO_API_KEY_SID:-}
+      LEADSMAN_TWILIO_API_KEY_SECRET: ${LEADSMAN_TWILIO_API_KEY_SECRET:-}
+      LEADSMAN_TWILIO_FROM: ${LEADSMAN_TWILIO_FROM:-}
+      LEADSMAN_TELEGRAM_BOT_TOKEN: ${LEADSMAN_TELEGRAM_BOT_TOKEN:-}
+      LEADSMAN_SIGNAL_BASE_URL: ${LEADSMAN_SIGNAL_BASE_URL:-}
+      LEADSMAN_SIGNAL_FROM: ${LEADSMAN_SIGNAL_FROM:-}
+      # Gateway visibility and the host's forwarding address, both read from the
+      # provisioner's /shared/config.json (mounted below). Nothing new to configure: that
+      # file already carries chirpStackUrl + apiKey + tenantId + gatewayBridgeHost.
+      #
+      # The gateway API is what lets Leadsman see a gateway that is CONNECTED and hearing
+      # nothing (dead concentrator, antenna off its mount) or one registered and never
+      # heard from. Neither appears in event_up.rx_info at all — a gateway that receives
+      # nothing writes nothing — so they cannot be found from the event store.
+      #
+      # gatewayBridgeHost is the host LAN address setup.sh detects and hands to gateways.
+      # Leadsman compares it against the previous sounding's value, so a new DHCP lease
+      # after a power cut is reported as "the address moved from X to Y, re-point the
+      # gateways" instead of showing up as an unexplained site-wide silence. A bridged
+      # container cannot see the host's LAN address itself, which is why it is passed in.
+      #
+      # Clear this to run without those three checks; they report `skipped` rather than
+      # quietly finding nothing.
+      LEADSMAN_CHIRPSTACK_CONFIG: ${LEADSMAN_CHIRPSTACK_CONFIG:-/shared/config.json}
+      # Liveness ping, POSTed after every sounding. THE ONLY signal that survives this box
+      # being off: while the host is down Leadsman is down, so a power cut produces no
+      # alerts at all and looks exactly like a quiet night. Point it at something the
+      # outage cannot reach — a hosted ping receiver, or a Hermes route on other hardware.
+      # A watchdog on this same device dies with it. Blank = no heartbeat.
+      LEADSMAN_HEARTBEAT_URL: ${LEADSMAN_HEARTBEAT_URL:-}
+      LEADSMAN_WEBHOOK_TOKEN_HEARTBEAT: ${LEADSMAN_WEBHOOK_TOKEN_HEARTBEAT:-}
+    volumes:
+      # Read-only: the engine never writes its config. ./leadsman/leadsman.json is
+      # created from leadsman.example.json by the setup scripts and is git-ignored, so
+      # your check selection survives an update. Edit it and
+      # `docker compose restart leadsman` to change which checks run.
+      - ./leadsman:/etc/leadsman:ro
+      # Read-only, same mount leftenant and mock-sensors use: the provisioner writes
+      # config.json here on every start.
+      - shared:/shared:ro
+    depends_on:
+      events-postgres:
+        condition: service_healthy
+      leadsman-migrate:
+        condition: service_completed_successfully
+    # Resource ceiling. On a 2-core edge device the engine must not crowd out
+    # ChirpStack's ingestion; soundings are not latency-critical. `deploy.resources`
+    # is honoured by `docker compose up` (non-swarm) as of Compose v2.
+    deploy:
+      resources:
+        limits:
+          cpus: "${LEADSMAN_CPUS:-0.50}"
+          memory: ${LEADSMAN_MEMORY:-256M}
+
+  # ── Signal relay (opt-in) ─────────────────────────────────────────────────────
+  # Signal has no hosted send API, so sending requires signal-cli. This wraps it in an HTTP
+  # service Leadsman can POST to. Behind a compose profile, so a plain `up` never starts it:
+  #
+  #   docker compose --profile signal up -d signal-cli
+  #
+  # One-time registration, which cannot be automated — Signal requires a captcha and an SMS
+  # code against a real number you control (a landline or VoIP number usually will not work):
+  #   1. open https://signalcaptchas.org/registration/generate.html and solve it
+  #   2. copy the signalcaptcha:// link it produces
+  #   3. docker compose exec signal-cli signal-cli -a +1512... register --captcha <link>
+  #   4. docker compose exec signal-cli signal-cli -a +1512... verify <6-digit code>
+  # Then set LEADSMAN_SIGNAL_BASE_URL=http://signal-cli:8080 and LEADSMAN_SIGNAL_FROM=+1512…
+  #
+  # To message a group rather than individuals, list its id in the destination's `to` array —
+  # signal-cli reports group ids as `group.<base64>`:
+  #   docker compose exec signal-cli signal-cli -a +1512... listGroups
+  signal-cli:
+    image: bbernhard/signal-cli-rest-api:latest
+    profiles: ["signal"]
+    restart: unless-stopped
+    environment:
+      # json-rpc keeps signal-cli resident instead of spawning a JVM per request, which on a
+      # 2-core edge device is the difference between a fast send and a multi-second one.
+      MODE: json-rpc
+    volumes:
+      - signalcli:/home/.local/share/signal-cli
+    # Not published: only Leadsman needs to reach it, over the compose network. Publish it
+    # only for the registration steps above if you prefer curl to `exec`.
 
   # ── Mock sensors (demo data generator; opt-in via the `mock` profile) ─────────
   # Simulates a handful of real ag sensors: builds valid LoRaWAN uplinks (MIC +
@@ -328,3 +496,5 @@ volumes:
   redisdata:
   eventsdata:
   shared:
+  # Signal's registered identity and session state. Losing it means re-registering.
+  signalcli:
