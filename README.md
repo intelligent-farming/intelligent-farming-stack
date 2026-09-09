@@ -267,8 +267,10 @@ Two things make it worth running by default:
 
 ### What runs by default
 
-Eight fleet-health checks, out of a menu of 55. These need no crop-specific tuning, and they cover the
-failures that otherwise make every other check silently blind:
+Fourteen checks, out of a menu of 64. These need no crop-specific tuning, and they cover the
+failures that otherwise make every other check silently blind.
+
+Eight are about a device:
 
 | Check | Catches |
 |-------|---------|
@@ -281,10 +283,53 @@ failures that otherwise make every other check silently blind:
 | `status-margin-low` | demodulation margin collapsing, i.e. a link about to fail |
 | `join-churn` | a device re-joining repeatedly instead of holding its session |
 
-The remaining 47 are thresholds over the normalized codec vocabulary — wind speed, air and soil
-temperature, leaf wetness, tank level, CO₂, pressure, rainfall rate, geofence breach, and so on. They
-ship **disabled**, because a sensible threshold depends on your crop, region, and equipment, and
-enabling everything at once produces noise rather than signal.
+Six are about the layers underneath one — the gateway, the site, the box itself. These matter
+because a fault down there does not present as itself: when a gateway stops forwarding, every
+device behind it goes silent at once, so a device-only monitor reports a dozen faults that each
+name a working sensor and none that names the gateway.
+
+| Check | Catches |
+|-------|---------|
+| `fleet-silent` | nothing arriving from **anything** — one site alert instead of one per device, and minutes rather than hours after the fact |
+| `gateway-silent` | one gateway of several stopped forwarding, while the rest kept going |
+| `gateway-deaf` | a gateway online and sending stats while receiving nothing — dead concentrator, antenna off its mount, water in the feeder |
+| `gateway-never-seen` | registered in ChirpStack and never connected: the commissioning mistake |
+| `host-restarted` | this box rebooted, and how long nothing was being monitored |
+| `host-address-changed` | the host's LAN address moved, so every gateway is still forwarding to an address nobody is listening on |
+
+That last one is worth knowing about before you need it. A gateway never rediscovers its network
+server — it is told an address once and forwards there forever. Come back from a power cut on a new
+DHCP lease and the whole site goes dark while every gateway, ChirpStack, and this stack all report
+themselves perfectly healthy. `host-address-changed` names the old and new address so the fix is
+"re-point the gateways" rather than an afternoon of investigation. It reads `gatewayBridgeHost` from
+the provisioner's `/shared/config.json`, which is the same value the Add-Gateway wizard hands out,
+so it needs no configuration here.
+
+**Also worth setting: `LEADSMAN_HEARTBEAT_URL`.** While this box is off, Leadsman is off, so
+nothing above can report an outage *while it is happening* — a six-hour power cut produces no
+alerts at all and looks exactly like a quiet night. A heartbeat inverts that: the engine pings an
+external receiver after every sounding, and that receiver alarms when the pings stop. It has to
+live somewhere the outage cannot reach, so a watchdog on this same device does not count. See
+`.env.example`.
+
+The remaining 50 are mostly thresholds over the normalized codec vocabulary — wind speed, air and
+soil temperature, leaf wetness, tank level, CO₂, pressure, rainfall rate, geofence breach, and so on
+— plus three gateway checks that need site-specific tuning (`gateway-flapping`,
+`gateway-redundancy-lost`, `gateway-time-unsynced`). They ship **disabled**, because a sensible
+threshold depends on your crop, region, and equipment, and enabling everything at once produces
+noise rather than signal.
+
+### Noise control
+
+One thing is on by default that withholds alerts, so it is worth stating plainly: while a
+`fleet-silent` or `gateway-silent` alert is open, `device-silent` alerts are **recorded but not
+delivered**. That is the storm not happening — a gateway outage would otherwise send one message per
+orphaned device, each naming a sensor that is fine.
+
+Nothing is lost. Suppressed alerts appear in `leadsman status` and `leadsman.open_alert` with
+`detail.suppressedBy` naming what withheld them, and any still open when the outage alert resolves
+are delivered then — so a node that really is dead is still reported once the gateway is back. Put
+`"suppress": []` in `leadsman/leadsman.json` to deliver everything regardless of cause.
 
 ### Choosing checks
 

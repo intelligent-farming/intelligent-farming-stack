@@ -369,12 +369,40 @@ services:
       LEADSMAN_TELEGRAM_BOT_TOKEN: ${LEADSMAN_TELEGRAM_BOT_TOKEN:-}
       LEADSMAN_SIGNAL_BASE_URL: ${LEADSMAN_SIGNAL_BASE_URL:-}
       LEADSMAN_SIGNAL_FROM: ${LEADSMAN_SIGNAL_FROM:-}
+      # Gateway visibility and the host's forwarding address, both read from the
+      # provisioner's /shared/config.json (mounted below). Nothing new to configure: that
+      # file already carries chirpStackUrl + apiKey + tenantId + gatewayBridgeHost.
+      #
+      # The gateway API is what lets Leadsman see a gateway that is CONNECTED and hearing
+      # nothing (dead concentrator, antenna off its mount) or one registered and never
+      # heard from. Neither appears in event_up.rx_info at all — a gateway that receives
+      # nothing writes nothing — so they cannot be found from the event store.
+      #
+      # gatewayBridgeHost is the host LAN address setup.sh detects and hands to gateways.
+      # Leadsman compares it against the previous sounding's value, so a new DHCP lease
+      # after a power cut is reported as "the address moved from X to Y, re-point the
+      # gateways" instead of showing up as an unexplained site-wide silence. A bridged
+      # container cannot see the host's LAN address itself, which is why it is passed in.
+      #
+      # Clear this to run without those three checks; they report `skipped` rather than
+      # quietly finding nothing.
+      LEADSMAN_CHIRPSTACK_CONFIG: ${LEADSMAN_CHIRPSTACK_CONFIG:-/shared/config.json}
+      # Liveness ping, POSTed after every sounding. THE ONLY signal that survives this box
+      # being off: while the host is down Leadsman is down, so a power cut produces no
+      # alerts at all and looks exactly like a quiet night. Point it at something the
+      # outage cannot reach — a hosted ping receiver, or a Hermes route on other hardware.
+      # A watchdog on this same device dies with it. Blank = no heartbeat.
+      LEADSMAN_HEARTBEAT_URL: ${LEADSMAN_HEARTBEAT_URL:-}
+      LEADSMAN_WEBHOOK_TOKEN_HEARTBEAT: ${LEADSMAN_WEBHOOK_TOKEN_HEARTBEAT:-}
     volumes:
       # Read-only: the engine never writes its config. ./leadsman/leadsman.json is
       # created from leadsman.example.json by the setup scripts and is git-ignored, so
       # your check selection survives an update. Edit it and
       # `docker compose restart leadsman` to change which checks run.
       - ./leadsman:/etc/leadsman:ro
+      # Read-only, same mount leftenant and mock-sensors use: the provisioner writes
+      # config.json here on every start.
+      - shared:/shared:ro
     depends_on:
       events-postgres:
         condition: service_healthy
