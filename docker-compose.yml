@@ -310,7 +310,7 @@ services:
   # before the engine starts. Runs as the OWNER role — DDL is deliberately outside the
   # engine role's rights, so the long-running container cannot alter any schema.
   leadsman-migrate:
-    image: ${LEADSMAN_IMAGE:-ghcr.io/intelligent-farming/leadsman:0.2}
+    image: ${LEADSMAN_IMAGE:-ghcr.io/intelligent-farming/leadsman:0.3}
     restart: "no"
     command: ["migrate"]
     environment:
@@ -330,7 +330,7 @@ services:
         condition: service_completed_successfully
 
   leadsman:
-    image: ${LEADSMAN_IMAGE:-ghcr.io/intelligent-farming/leadsman:0.2}
+    image: ${LEADSMAN_IMAGE:-ghcr.io/intelligent-farming/leadsman:0.3}
     restart: unless-stopped
     environment:
       # Engine role: SELECT on public (read ChirpStack events), INSERT/UPDATE on the
