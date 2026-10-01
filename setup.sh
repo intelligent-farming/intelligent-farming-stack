@@ -77,11 +77,21 @@ else
   log "Using existing .env."
 fi
 
+# An image pin in .env survives every update, so a stack upgrade that moves Leadsman to
+# a new line never reaches an install that pinned the old one. Say so rather than
+# rewriting .env: the pin may be deliberate.
+LEADSMAN_DEFAULT_IMAGE=$(grep -oE 'LEADSMAN_IMAGE:-[^}]+' docker-compose.yml | head -1 | sed 's/^LEADSMAN_IMAGE:-//')
+LEADSMAN_PINNED_IMAGE=$(env_val LEADSMAN_IMAGE "")
+if [ -n "$LEADSMAN_PINNED_IMAGE" ] && [ -n "$LEADSMAN_DEFAULT_IMAGE" ] && [ "$LEADSMAN_PINNED_IMAGE" != "$LEADSMAN_DEFAULT_IMAGE" ]; then
+  warn "LEADSMAN_IMAGE in .env pins $LEADSMAN_PINNED_IMAGE; this stack defaults to $LEADSMAN_DEFAULT_IMAGE."
+  warn "  Remove or comment out that line in .env to follow the stack's Leadsman version."
+fi
+
 # ── leadsman config ──────────────────────────────────────────────────────────
 # Same idiom as .env: the example is tracked, the live copy is git-ignored. Which
 # checks are enabled is a per-deployment decision, so an update must never clobber it.
 if [ ! -f leadsman/leadsman.json ]; then
-  log "Creating leadsman/leadsman.json from the example (8 fleet-health checks enabled)."
+  log "Creating leadsman/leadsman.json from the example (15 fleet-health checks enabled)."
   cp leadsman/leadsman.example.json leadsman/leadsman.json
 else
   log "Using existing leadsman/leadsman.json."

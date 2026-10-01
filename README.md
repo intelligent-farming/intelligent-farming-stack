@@ -97,6 +97,16 @@ latest `main` (`docker build --pull <giturl>`), pulls newer ChirpStack/Postgres 
 the containers. If you ever suspect a stale Leftenant build, force it with `./setup.sh --rebuild`
 (`-Rebuild`), which adds `--no-cache`.
 
+Two things an update deliberately does not touch, both because they are yours:
+
+- **`LEADSMAN_IMAGE` in `.env`.** If your `.env` sets it, that pin wins over the Leadsman version
+  this stack ships, and the setup scripts print a warning when the two differ. Remove or comment
+  out the line to follow the stack.
+- **`leadsman/leadsman.json`.** Your check selection is kept as it is, so checks added to
+  `leadsman/leadsman.example.json` in a newer release (and changed defaults such as a geofence
+  `clearMargin`, which is metres from Leadsman 0.4) only reach you if you copy them across. Run
+  `docker compose run --rm leadsman verify` after editing.
+
 ## Stopping and removing
 
 Run these from the repo folder (`%USERPROFILE%\ifs\intelligent-farming-stack-main` on Windows, or
@@ -267,10 +277,10 @@ Two things make it worth running by default:
 
 ### What runs by default
 
-Fourteen checks, out of a menu of 64. These need no crop-specific tuning, and they cover the
+Fifteen checks, out of a menu of 80. These need no crop-specific tuning, and they cover the
 failures that otherwise make every other check silently blind.
 
-Eight are about a device:
+Nine are about a device:
 
 | Check | Catches |
 |-------|---------|
@@ -278,6 +288,7 @@ Eight are about a device:
 | `battery-low` | decoded battery / supply voltage below threshold, with hysteresis |
 | `decode-failure` | uplinks arriving but the codec producing nothing — including a JSON `null` payload |
 | `soil-moisture-missing` | a field that used to decode and silently vanished (usually a codec or profile change) |
+| `measurement-implausible` | a reading physics does not permit — negative humidity, pH above 14, a byte-order bug — using the bounds from the codec vocabulary, with no configuration |
 | `device-log-error` | ChirpStack's own device-level error events |
 | `status-battery-low` | MAC-layer battery percentage from `DevStatusAns` — works with no codec at all |
 | `status-margin-low` | demodulation margin collapsing, i.e. a link about to fail |
@@ -312,10 +323,13 @@ external receiver after every sounding, and that receiver alarms when the pings 
 live somewhere the outage cannot reach, so a watchdog on this same device does not count. See
 `.env.example`.
 
-The remaining 50 are mostly thresholds over the normalized codec vocabulary — wind speed, air and
+The remaining 65 are mostly thresholds over the normalized codec vocabulary — wind speed, air and
 soil temperature, leaf wetness, tank level, CO₂, pressure, rainfall rate, geofence breach, and so on
-— plus three gateway checks that need site-specific tuning (`gateway-flapping`,
-`gateway-redundancy-lost`, `gateway-time-unsynced`). They ship **disabled**, because a sensible
+— plus crop and disease models (degree days, chill hours, VPD, delta-T, botrytis and peacock-spot
+risk, a managed soil-moisture deficit band), irrigation that never reached the root zone, forecast
+checks that warn before frost, heat, rain or spray wind arrive (these need
+`LEADSMAN_WEATHERBIT_API_KEY` and a `forecast` block), and three gateway checks that need
+site-specific tuning (`gateway-flapping`, `gateway-redundancy-lost`, `gateway-time-unsynced`). They ship **disabled**, because a sensible
 threshold depends on your crop, region, and equipment, and enabling everything at once produces
 noise rather than signal.
 
