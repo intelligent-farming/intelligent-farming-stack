@@ -310,7 +310,7 @@ services:
   # before the engine starts. Runs as the OWNER role — DDL is deliberately outside the
   # engine role's rights, so the long-running container cannot alter any schema.
   leadsman-migrate:
-    image: ${LEADSMAN_IMAGE:-ghcr.io/intelligent-farming/leadsman:0.3}
+    image: ${LEADSMAN_IMAGE:-ghcr.io/intelligent-farming/leadsman:0.4}
     restart: "no"
     command: ["migrate"]
     environment:
@@ -330,7 +330,7 @@ services:
         condition: service_completed_successfully
 
   leadsman:
-    image: ${LEADSMAN_IMAGE:-ghcr.io/intelligent-farming/leadsman:0.3}
+    image: ${LEADSMAN_IMAGE:-ghcr.io/intelligent-farming/leadsman:0.4}
     restart: unless-stopped
     environment:
       # Engine role: SELECT on public (read ChirpStack events), INSERT/UPDATE on the
@@ -394,6 +394,9 @@ services:
       # A watchdog on this same device dies with it. Blank = no heartbeat.
       LEADSMAN_HEARTBEAT_URL: ${LEADSMAN_HEARTBEAT_URL:-}
       LEADSMAN_WEBHOOK_TOKEN_HEARTBEAT: ${LEADSMAN_WEBHOOK_TOKEN_HEARTBEAT:-}
+      # Forecast checks (forecast-threshold). Also needs a `forecast` block in
+      # leadsman.json; without both, those checks report `skipped`. See .env.example.
+      LEADSMAN_WEATHERBIT_API_KEY: ${LEADSMAN_WEATHERBIT_API_KEY:-}
     volumes:
       # Read-only: the engine never writes its config. ./leadsman/leadsman.json is
       # created from leadsman.example.json by the setup scripts and is git-ignored, so
